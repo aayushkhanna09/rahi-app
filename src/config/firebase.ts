@@ -1,11 +1,10 @@
 // src/config/firebase.ts
 import { initializeApp } from 'firebase/app';
-// We import Auth, Firestore, and Storage to use them later
-import { getAuth } from 'firebase/auth';
+import { getAuth } from 'firebase/auth'; // Reverting to simple Auth to fix the error
 import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
+import ReactNativeAsyncStorage from '@react-native-async-storage/async-storage';
 
-// REPLACE THE OBJECT BELOW WITH YOUR COPIED KEYS FROM FIREBASE CONSOLE
 const firebaseConfig = {
     apiKey: "AIzaSyAiZVUNm3iPF_b2YQN__i5v6sYPD4l5uE8",
     authDomain: "rahi-app-efa76.firebaseapp.com",
@@ -15,10 +14,15 @@ const firebaseConfig = {
     appId: "1:743169416878:web:902309dec355f4a85bd73f"
 };
 
-// Initialize Firebase
+
 const app = initializeApp(firebaseConfig);
 
-// Export the services so other files can use them
-export const auth = getAuth(app);
-export const database = getFirestore(app);
-export const storage = getStorage(app);
+// We use the standard getAuth here to fix your TypeScript error.
+// It might show a yellow warning box about "Persistence" in the app, 
+// but you can just dismiss it. It works fine for the demo.
+const auth = getAuth(app);
+
+const database = getFirestore(app);
+const storage = getStorage(app);
+
+export { auth, database, storage };

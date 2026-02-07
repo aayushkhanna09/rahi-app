@@ -16,11 +16,12 @@ export default function Home({ navigation }: any) {
     const [posts, setPosts] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
 
-    // Create Post State
+    // Post Creation State
     const [createModalVisible, setCreateModalVisible] = useState(false);
     const [postText, setPostText] = useState('');
-    const [detectedLocation, setDetectedLocation] = useState<string | null>(null);
+    const [locationName, setLocationName] = useState<string | null>(null);
     const [postImage, setPostImage] = useState<string | null>(null);
+    const [locLoading, setLocLoading] = useState(false);
 
     // Comments State
     const [selectedPost, setSelectedPost] = useState<any>(null);
@@ -34,76 +35,66 @@ export default function Home({ navigation }: any) {
         return unsubscribe;
     }, []);
 
-    // 1. First Step: Get Location & Open Modal
-    const initiateCheckIn = async (withPhoto = false) => {
-        setLoading(true);
+    // --- NEW: Location Tagging Logic (Optional) ---
+    const detectLocation = async () => {
+        setLocLoading(true);
         try {
-            // Photo Logic
-            if (withPhoto) {
-                const img = await pickImage();
-                if (!img) { setLoading(false); return; }
-                setPostImage(img);
-            } else {
-                setPostImage(null);
-            }
-
-            // Location Logic
             let { status } = await Location.requestForegroundPermissionsAsync();
-            if (status !== 'granted') { Alert.alert('Permission denied'); setLoading(false); return; }
+            if (status !== 'granted') { Alert.alert('Permission denied'); return; }
 
-            let location = await Location.getCurrentPositionAsync({});
-            const userPoint = Turf.point([location.coords.longitude, location.coords.latitude]);
+            let loc = await Location.getCurrentPositionAsync({});
+            const userPoint = Turf.point([loc.coords.longitude, loc.coords.latitude]);
 
-            let stateName = "Unknown Location";
+            let stateName = "India";
             Turf.featureEach(INDIAN_STATES as any, (currentFeature) => {
                 if (Turf.booleanPointInPolygon(userPoint, currentFeature as any)) {
                     stateName = currentFeature.properties?.name || "India";
                 }
             });
-
-            setDetectedLocation(stateName);
-            setPostText(`Checking in at ${stateName}! 🇮🇳`); // Default text
-            setCreateModalVisible(true); // <--- OPEN MODAL FOR CAPTION
-
-        } catch (error: any) {
-            Alert.alert("Error", error.message);
-        } finally {
-            setLoading(false);
-        }
+            setLocationName(stateName);
+        } catch (error: any) { Alert.alert("Error", "Could not fetch location."); }
+        finally { setLocLoading(false); }
     };
 
-    // 2. Second Step: Actually Post (With User's PFP and Custom Text)
-    const finalizePost = async () => {
-        if (!auth.currentUser || !detectedLocation) return;
+    // --- NEW: Add Photo Logic ---
+    const handleAddPhoto = async () => {
+        const img = await pickImage();
+        if (img) setPostImage(img);
+    };
+
+    // --- NEW: Finalize Post ---
+    const handlePost = async () => {
+        if (!postText && !postImage) { Alert.alert("Empty Post", "Please add text or an image."); return; }
+
         setLoading(true);
         try {
-            // Fetch current user data to get the latest PFP
-            const userDoc = await getDoc(doc(database, 'users', auth.currentUser.uid));
+            const userDoc = await getDoc(doc(database, 'users', auth.currentUser!.uid));
             const userData = userDoc.data();
-            const userPhoto = userData?.photoURL || null;
 
-            // Update User Travel History
-            const userRef = doc(database, 'users', auth.currentUser.uid);
-            await setDoc(userRef, { visitedStates: arrayUnion(detectedLocation), email: auth.currentUser.email }, { merge: true });
+            // If location was tagged, update user history
+            if (locationName) {
+                const userRef = doc(database, 'users', auth.currentUser!.uid);
+                await setDoc(userRef, { visitedStates: arrayUnion(locationName) }, { merge: true });
+            }
 
-            // Award Badge
-            if ((userData?.visitedStates?.length || 0) >= 1) await setDoc(userRef, { badges: arrayUnion('Bronze Explorer') }, { merge: true });
-
-            // Create Post
             await addDoc(collection(database, 'posts'), {
-                text: postText, // <--- Custom User Text
-                state: detectedLocation,
-                image: postImage,
-                uid: auth.currentUser.uid,
-                displayName: auth.currentUser.email?.split('@')[0],
-                userPhoto: userPhoto, // <--- SAVING PFP TO POST
+                text: postText,
+                state: locationName || null, // Optional
+                image: postImage || null,
+                uid: auth.currentUser!.uid,
+                displayName: auth.currentUser!.email?.split('@')[0],
+                userPhoto: userData?.photoURL || null,
                 timestamp: serverTimestamp(),
                 likes: 0,
                 likedBy: []
             });
 
+            // Reset & Close
+            setPostText('');
+            setLocationName(null);
+            setPostImage(null);
             setCreateModalVisible(false);
-            Alert.alert("Success", "Posted!");
+
         } catch (e: any) {
             Alert.alert("Error", e.message);
         } finally {
@@ -124,11 +115,6 @@ export default function Home({ navigation }: any) {
         }
     };
 
-    const openComments = (post: any) => {
-        setSelectedPost(post);
-        setModalVisible(true);
-    };
-
     const renderPost = ({ item }: any) => {
         const isLiked = item.likedBy?.includes(auth.currentUser?.uid);
         return (
@@ -138,16 +124,19 @@ export default function Home({ navigation }: any) {
                         style={{ flexDirection: 'row', alignItems: 'center' }}
                         onPress={() => navigation.navigate('UserProfile', { uid: item.uid })}
                     >
-                        {/* NEW: Display Actual User PFP from Post Data */}
                         {item.userPhoto ? (
                             <Image source={{ uri: item.userPhoto }} style={styles.avatarImage} />
                         ) : (
                             <View style={styles.avatarPlaceholder}><Text style={{ fontSize: 20 }}>👤</Text></View>
                         )}
-
                         <View>
                             <Text style={styles.username}>{item.displayName}</Text>
-                            <Text style={styles.location}>{item.state || 'India'}</Text>
+                            {item.state && (
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    <Ionicons name="location-sharp" size={10} color="#4CAF50" />
+                                    <Text style={styles.location}>{item.state}</Text>
+                                </View>
+                            )}
                         </View>
                     </TouchableOpacity>
                 </View>
@@ -158,10 +147,9 @@ export default function Home({ navigation }: any) {
                 <View style={styles.cardFooter}>
                     <TouchableOpacity style={styles.actionBtn} onPress={() => handleLike(item)}>
                         <Ionicons name={isLiked ? "heart" : "heart-outline"} size={24} color={isLiked ? "red" : "#333"} />
-                        <Text style={[styles.actionText, isLiked && { color: 'red' }]}>{item.likes || 0} Likes</Text>
+                        <Text style={[styles.actionText, isLiked && { color: 'red' }]}>{item.likes || 0}</Text>
                     </TouchableOpacity>
-
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => openComments(item)}>
+                    <TouchableOpacity style={styles.actionBtn} onPress={() => { setSelectedPost(item); setModalVisible(true); }}>
                         <Ionicons name="chatbubble-outline" size={22} color="#333" />
                         <Text style={styles.actionText}>Comment</Text>
                     </TouchableOpacity>
@@ -172,16 +160,12 @@ export default function Home({ navigation }: any) {
 
     return (
         <View style={styles.container}>
+            {/* Header with (+) Button */}
             <View style={styles.header}>
                 <Text style={styles.headerTitle}>RAHī Feed</Text>
-                <View style={{ flexDirection: 'row' }}>
-                    <TouchableOpacity style={[styles.iconBtn, { marginRight: 10, backgroundColor: '#E8F5E9' }]} onPress={() => initiateCheckIn(true)} disabled={loading}>
-                        <Ionicons name="camera" size={24} color="#4CAF50" />
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.checkInBtn} onPress={() => initiateCheckIn(false)} disabled={loading}>
-                        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>📍 Check In</Text>}
-                    </TouchableOpacity>
-                </View>
+                <TouchableOpacity style={styles.createBtn} onPress={() => setCreateModalVisible(true)}>
+                    <Ionicons name="add" size={24} color="#fff" />
+                </TouchableOpacity>
             </View>
 
             <FlatList data={posts} renderItem={renderPost} keyExtractor={item => item.id} contentContainerStyle={{ padding: 10 }} />
@@ -192,27 +176,37 @@ export default function Home({ navigation }: any) {
             <Modal visible={createModalVisible} animationType="slide" transparent={true}>
                 <View style={styles.modalOverlay}>
                     <View style={styles.modalContent}>
-                        <Text style={styles.modalTitle}>New Post 📍</Text>
-                        <Text style={styles.modalSub}>Detected: {detectedLocation}</Text>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
+                            <Text style={styles.modalTitle}>New Post</Text>
+                            <TouchableOpacity onPress={() => setCreateModalVisible(false)}><Ionicons name="close" size={24} color="#333" /></TouchableOpacity>
+                        </View>
 
                         <TextInput
                             style={styles.input}
-                            placeholder="Describe your experience..."
+                            placeholder="What's on your mind?"
                             value={postText}
                             onChangeText={setPostText}
                             multiline
                         />
 
-                        {postImage && <Image source={{ uri: postImage }} style={styles.previewImage} />}
-
-                        <View style={styles.modalButtons}>
-                            <TouchableOpacity style={styles.cancelBtn} onPress={() => setCreateModalVisible(false)}>
-                                <Text style={{ color: '#555' }}>Cancel</Text>
+                        {/* Attachments Row */}
+                        <View style={{ flexDirection: 'row', marginBottom: 15 }}>
+                            <TouchableOpacity style={[styles.attachBtn, locationName && styles.attachActive]} onPress={detectLocation} disabled={locLoading}>
+                                {locLoading ? <ActivityIndicator size="small" color="#4CAF50" /> : <Ionicons name="location-sharp" size={20} color={locationName ? "#fff" : "#4CAF50"} />}
+                                <Text style={[styles.attachText, locationName && { color: '#fff' }]}>{locationName || "Location"}</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity style={styles.postBtn} onPress={finalizePost} disabled={loading}>
-                                {loading ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: 'bold' }}>Post</Text>}
+
+                            <TouchableOpacity style={[styles.attachBtn, postImage && styles.attachActive]} onPress={handleAddPhoto}>
+                                <Ionicons name="image" size={20} color={postImage ? "#fff" : "#2196F3"} />
+                                <Text style={[styles.attachText, postImage && { color: '#fff' }]}>{postImage ? "Added" : "Photo"}</Text>
                             </TouchableOpacity>
                         </View>
+
+                        {postImage && <Image source={{ uri: postImage }} style={styles.previewImage} />}
+
+                        <TouchableOpacity style={styles.postBtn} onPress={handlePost} disabled={loading}>
+                            {loading ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Post</Text>}
+                        </TouchableOpacity>
                     </View>
                 </View>
             </Modal>
@@ -225,29 +219,28 @@ const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#f0f2f5' },
     header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 15, paddingTop: 50, backgroundColor: '#fff', elevation: 2 },
     headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#4CAF50' },
-    checkInBtn: { backgroundColor: '#4CAF50', paddingVertical: 10, paddingHorizontal: 15, borderRadius: 20 },
-    iconBtn: { padding: 10, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
-    btnText: { color: '#fff', fontWeight: 'bold' },
+    createBtn: { backgroundColor: '#4CAF50', width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
+
     card: { backgroundColor: '#fff', borderRadius: 10, padding: 15, marginBottom: 10, elevation: 1 },
     cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
     avatarPlaceholder: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
     avatarImage: { width: 40, height: 40, borderRadius: 20, marginRight: 10 },
     username: { fontWeight: 'bold', fontSize: 16 },
-    location: { color: '#666', fontSize: 12 },
+    location: { color: '#666', fontSize: 12, marginLeft: 2 },
     postText: { fontSize: 15, lineHeight: 22, marginBottom: 10, color: '#333' },
     postImage: { width: '100%', height: 250, borderRadius: 10, marginBottom: 10 },
     cardFooter: { flexDirection: 'row', borderTopWidth: 1, borderColor: '#eee', paddingTop: 10 },
     actionBtn: { flexDirection: 'row', alignItems: 'center', marginRight: 20 },
     actionText: { marginLeft: 5, color: '#555', fontSize: 14 },
 
-    // Modal Styles
+    // Modal
     modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
     modalContent: { backgroundColor: '#fff', borderRadius: 20, padding: 20, elevation: 5 },
-    modalTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 5 },
-    modalSub: { color: '#666', marginBottom: 15 },
-    input: { borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 10, minHeight: 80, textAlignVertical: 'top', marginBottom: 15 },
+    modalTitle: { fontSize: 20, fontWeight: 'bold' },
+    input: { backgroundColor: '#f9f9f9', borderRadius: 10, padding: 15, minHeight: 100, textAlignVertical: 'top', marginBottom: 15, fontSize: 16 },
+    attachBtn: { flexDirection: 'row', alignItems: 'center', padding: 8, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: '#eee', marginRight: 10 },
+    attachActive: { backgroundColor: '#4CAF50', borderColor: '#4CAF50' },
+    attachText: { marginLeft: 5, color: '#555', fontSize: 12, fontWeight: '600' },
     previewImage: { width: '100%', height: 150, borderRadius: 10, marginBottom: 15 },
-    modalButtons: { flexDirection: 'row', justifyContent: 'flex-end' },
-    cancelBtn: { padding: 10, marginRight: 10 },
-    postBtn: { backgroundColor: '#4CAF50', paddingVertical: 10, paddingHorizontal: 25, borderRadius: 10 }
+    postBtn: { backgroundColor: '#4CAF50', paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginTop: 10 }
 });
