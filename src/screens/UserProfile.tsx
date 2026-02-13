@@ -1,190 +1,258 @@
 // src/screens/UserProfile.tsx
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, ActivityIndicator, TouchableOpacity, ScrollView, Alert } from 'react-native';
-import { doc, getDoc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { View, Text, StyleSheet, Image, FlatList, TouchableOpacity, Dimensions, ActivityIndicator, Modal } from 'react-native';
+import { collection, query, where, doc, onSnapshot, updateDoc, writeBatch, arrayRemove, arrayUnion, addDoc, serverTimestamp, increment } from 'firebase/firestore';
 import { auth, database } from '../config/firebase';
 import { Ionicons } from '@expo/vector-icons';
-import IndiaMap from '../components/IndiaMap';
+
+const { width } = Dimensions.get('window');
+const GRID_SIZE = width / 3;
+
+interface Post {
+    id: string;
+    image?: string;
+    text?: string;
+    likes?: string[];
+    uid?: string;
+    displayName?: string;
+    location?: string;
+    state?: string;
+    [key: string]: any;
+}
 
 export default function UserProfile({ route, navigation }: any) {
     const { uid } = route.params;
-    const [userData, setUserData] = useState<any>(null);
-    const [loading, setLoading] = useState(true);
-    const [isConnected, setIsConnected] = useState(false);
-    const [connectionLoading, setConnectionLoading] = useState(false);
+    const currentUid = auth.currentUser?.uid;
+    const isOwnProfile = uid === currentUid;
 
-    const currentUserUid = auth.currentUser?.uid;
+    const [targetUserData, setTargetUserData] = useState<any>(null);
+    const [currentUserData, setCurrentUserData] = useState<any>(null);
+    const [userPosts, setUserPosts] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [selectedPost, setSelectedPost] = useState<Post | null>(null);
 
     useEffect(() => {
-        fetchUser();
-    }, [uid]);
+        if (!currentUid) return;
+        setLoading(true);
 
-    const fetchUser = async () => {
+        const targetRef = doc(database, 'users', uid);
+        const unsubTarget = onSnapshot(targetRef, (docSnap) => { if (docSnap.exists()) setTargetUserData(docSnap.data()); });
+
+        let unsubCurrent = () => { };
+        if (!isOwnProfile) {
+            const currentRef = doc(database, 'users', currentUid);
+            unsubCurrent = onSnapshot(currentRef, (docSnap) => { if (docSnap.exists()) setCurrentUserData(docSnap.data()); });
+        }
+
+        const postsQuery = query(collection(database, 'posts'), where('uid', '==', uid));
+        const unsubPosts = onSnapshot(postsQuery, (postSnapshot) => {
+            const posts = postSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            posts.sort((a: any, b: any) => b.timestamp - a.timestamp);
+            setUserPosts(posts);
+            setLoading(false);
+        });
+
+        return () => { unsubTarget(); unsubCurrent(); unsubPosts(); };
+    }, [uid, currentUid]);
+
+    const isFollowing = targetUserData?.followers?.includes(currentUid);
+    const hasRequested = targetUserData?.followRequests?.includes(currentUid);
+
+    const handleFollowAction = async () => {
+        if (!currentUid || !targetUserData || isOwnProfile) return;
+        const targetRef = doc(database, 'users', uid);
+        const currentRef = doc(database, 'users', currentUid);
         try {
-            const docSnap = await getDoc(doc(database, 'users', uid));
-            if (docSnap.exists()) {
-                const data = docSnap.data();
-                setUserData(data);
-                // Check if I am already in their followers list
-                if (data.followers && data.followers.includes(currentUserUid)) {
-                    setIsConnected(true);
+            const batch = writeBatch(database);
+            if (isFollowing) {
+                batch.update(targetRef, { followers: arrayRemove(currentUid) });
+                batch.update(currentRef, { following: arrayRemove(uid) });
+                await batch.commit();
+            } else if (hasRequested) {
+                await updateDoc(targetRef, { followRequests: arrayRemove(currentUid) });
+            } else {
+                await updateDoc(targetRef, { followRequests: arrayUnion(currentUid) });
+            }
+        } catch (error) { console.error("Error toggling follow status", error); }
+    };
+
+    // --- CRASH-PROOF LIKE FUNCTION ---
+    const handleLike = async (post: Post) => {
+        const currentUser = auth.currentUser;
+        if (!currentUser) return;
+
+        const postRef = doc(database, 'posts', post.id);
+        const currentLikes = Array.isArray(post.likes) ? post.likes : []; // SAFE CHECK
+        const isLiked = currentLikes.includes(currentUser.uid);
+
+        const updatedLikes = isLiked
+            ? currentLikes.filter(id => id !== currentUser.uid)
+            : [...currentLikes, currentUser.uid];
+
+        setSelectedPost({ ...post, likes: updatedLikes });
+
+        try {
+            if (isLiked) {
+                await updateDoc(postRef, { likes: arrayRemove(currentUser.uid), likeCount: increment(-1) });
+            } else {
+                await updateDoc(postRef, { likes: arrayUnion(currentUser.uid), likeCount: increment(1) });
+                if (post.uid && post.uid !== currentUser.uid) {
+                    await addDoc(collection(database, 'notifications'), {
+                        type: 'like',
+                        senderUid: currentUser.uid,
+                        senderName: currentUser.displayName || currentUser.email?.split('@')[0],
+                        senderPhoto: currentUser.photoURL || null,
+                        receiverUid: post.uid,
+                        postId: post.id,
+                        postImage: post.image,
+                        timestamp: serverTimestamp(),
+                        read: false
+                    });
                 }
             }
-        } catch (error) { console.error(error); } finally { setLoading(false); }
+        } catch (error) { console.error("Error toggling like:", error); }
     };
 
-    const toggleConnection = async () => {
-        if (!currentUserUid) return;
-        setConnectionLoading(true);
-
-        const targetUserRef = doc(database, 'users', uid);
-        const myUserRef = doc(database, 'users', currentUserUid);
-
-        try {
-            if (isConnected) {
-                // DISCONNECT
-                await updateDoc(targetUserRef, { followers: arrayRemove(currentUserUid) });
-                await updateDoc(myUserRef, { following: arrayRemove(uid) });
-                setIsConnected(false);
-                Alert.alert("Disconnected", `You unfollowed ${userData.email?.split('@')[0]}`);
-            } else {
-                // CONNECT
-                await updateDoc(targetUserRef, { followers: arrayUnion(currentUserUid) });
-                await updateDoc(myUserRef, { following: arrayUnion(uid) });
-                setIsConnected(true);
-                Alert.alert("Connected! 🤝", `You are now connected with ${userData.email?.split('@')[0]}`);
-            }
-        } catch (error) {
-            console.error(error);
-            Alert.alert("Error", "Could not update connection.");
-        } finally {
-            setConnectionLoading(false);
-        }
+    // --- SAFE RENDER HELPERS ---
+    const getLikesCount = (post: Post | null) => {
+        if (!post || !Array.isArray(post.likes)) return 0;
+        return post.likes.length;
     };
 
-    const handleMessage = () => {
-        if (!currentUserUid) return;
-        const roomId = [currentUserUid, uid].sort().join('_');
-        const chatName = userData.email?.split('@')[0];
-        navigation.navigate('Conversation', { roomId, chatName, isGlobal: false });
+    const isPostLiked = (post: Post | null) => {
+        if (!post || !Array.isArray(post.likes)) return false;
+        return post.likes.includes(auth.currentUser?.uid || '');
     };
 
-    if (loading) return <View style={styles.center}><ActivityIndicator size="large" color="#4CAF50" /></View>;
-    if (!userData) return <View style={styles.center}><Text>User not found.</Text></View>;
+    const renderGridItem = ({ item }: any) => (
+        <TouchableOpacity style={styles.gridItem} onPress={() => setSelectedPost(item)}>
+            {item.image ? (
+                <Image source={{ uri: item.image }} style={styles.gridImage} />
+            ) : (
+                <View style={[styles.gridImage, styles.noImagePlaceholder]}>
+                    <Text style={styles.noImageText} numberOfLines={2}>{item.text}</Text>
+                </View>
+            )}
+        </TouchableOpacity>
+    );
 
-    const badges = userData?.badges || [];
-    const states = userData?.visitedStates || [];
-    const tags = userData?.tags || [];
+    if (loading) return <ActivityIndicator size="large" color="#4CAF50" style={{ flex: 1, justifyContent: 'center' }} />;
 
     return (
-        <ScrollView style={styles.container}>
-            {/* Nav Header */}
-            <View style={styles.navHeader}>
-                <TouchableOpacity onPress={() => navigation.goBack()}>
-                    <Ionicons name="arrow-back" size={24} color="#333" />
+        <View style={styles.container}>
+            <View style={styles.topNav}>
+                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+                    <Ionicons name="arrow-back" size={28} color="#333" />
                 </TouchableOpacity>
-                <Text style={styles.navTitle}>Profile</Text>
+                <Text style={styles.navTitle}>{targetUserData?.email?.split('@')[0] || 'User'}</Text>
+                <View style={{ width: 28 }} />
             </View>
 
-            {/* Profile Card */}
             <View style={styles.header}>
-                <View style={styles.avatarPlaceholder}>
-                    {userData.photoURL ? (
-                        <Image source={{ uri: userData.photoURL }} style={styles.avatarImage} />
-                    ) : (
-                        <Text style={{ fontSize: 30 }}>👤</Text>
-                    )}
-                </View>
-
-                <Text style={styles.name}>{userData.email?.split('@')[0]}</Text>
-                <Text style={styles.bio}>{userData.bio || "Explorer on RAHī 🌍"}</Text>
-
-                <View style={styles.tagsRow}>
-                    {tags.map((tag: string) => (
-                        <View key={tag} style={styles.tagPill}><Text style={styles.tagText}>{tag}</Text></View>
-                    ))}
-                </View>
-
-                {/* --- ACTION BUTTONS ROW --- */}
-                {currentUserUid !== uid && (
-                    <View style={styles.actionRow}>
-                        {/* Connect Button */}
-                        <TouchableOpacity
-                            style={[styles.actionBtn, isConnected ? styles.connectedBtn : styles.connectBtn]}
-                            onPress={toggleConnection}
-                            disabled={connectionLoading}
-                        >
-                            {connectionLoading ? <ActivityIndicator color="#fff" size="small" /> : (
-                                <>
-                                    <Ionicons name={isConnected ? "checkmark" : "person-add"} size={18} color={isConnected ? "#333" : "#fff"} />
-                                    <Text style={[styles.btnText, isConnected ? { color: '#333' } : { color: '#fff' }]}>
-                                        {isConnected ? "Connected" : "Connect"}
-                                    </Text>
-                                </>
-                            )}
-                        </TouchableOpacity>
-
-                        {/* Message Button */}
-                        <TouchableOpacity style={[styles.actionBtn, styles.msgBtn]} onPress={handleMessage}>
-                            <Ionicons name="chatbubble-ellipses" size={18} color="#fff" />
-                            <Text style={[styles.btnText, { color: '#fff' }]}>Message</Text>
-                        </TouchableOpacity>
+                <Image source={{ uri: targetUserData?.photoURL || 'https://via.placeholder.com/100' }} style={styles.profileAvatar} />
+                <View style={styles.statsContainer}>
+                    <View style={styles.statBox}>
+                        <Text style={styles.statNumber}>{userPosts.length}</Text>
+                        <Text style={styles.statLabel}>Posts</Text>
                     </View>
-                )}
-
-                {/* Stats */}
-                <View style={styles.statsRow}>
-                    <View style={styles.stat}><Text style={styles.statNum}>{states.length}</Text><Text style={styles.statLabel}>States</Text></View>
-                    <View style={styles.stat}><Text style={styles.statNum}>{badges.length}</Text><Text style={styles.statLabel}>Badges</Text></View>
-                    <View style={styles.stat}><Text style={styles.statNum}>{userData.followers?.length || 0}</Text><Text style={styles.statLabel}>Followers</Text></View>
+                    <View style={styles.statBox}>
+                        <Text style={styles.statNumber}>{targetUserData?.followers?.length || 0}</Text>
+                        <Text style={styles.statLabel}>Followers</Text>
+                    </View>
+                    <View style={styles.statBox}>
+                        <Text style={styles.statNumber}>{targetUserData?.following?.length || 0}</Text>
+                        <Text style={styles.statLabel}>Following</Text>
+                    </View>
                 </View>
             </View>
 
-            <IndiaMap visitedStates={states} />
-
-            <Text style={styles.sectionTitle}>🏆 Achievements</Text>
-            <View style={styles.badgesContainer}>
-                {badges.length === 0 ? <Text style={{ color: '#888' }}>No badges yet.</Text> :
-                    badges.map((badge: string, index: number) => (
-                        <View key={index} style={styles.badge}>
-                            <Ionicons name="medal" size={24} color="#FFD700" />
-                            <Text style={styles.badgeText}>{badge}</Text>
-                        </View>
-                    ))
-                }
+            <View style={styles.bioSection}>
+                <Text style={styles.username}>{targetUserData?.displayName || targetUserData?.email?.split('@')[0]}</Text>
+                <Text style={styles.bio}>{targetUserData?.bio || 'Traveler'}</Text>
+                {isOwnProfile ? (
+                    <TouchableOpacity style={styles.editProfileBtn} onPress={() => navigation.navigate('EditProfile')}><Text style={styles.editProfileText}>Edit Profile</Text></TouchableOpacity>
+                ) : (
+                    <TouchableOpacity style={[styles.followBtn, isFollowing ? styles.followingBtn : hasRequested ? styles.requestedBtn : styles.notFollowingBtn]} onPress={handleFollowAction}>
+                        <Text style={[styles.followBtnText, (isFollowing || hasRequested) ? styles.darkText : styles.lightText]}>
+                            {isFollowing ? 'Following' : hasRequested ? 'Requested' : 'Follow'}
+                        </Text>
+                    </TouchableOpacity>
+                )}
             </View>
-        </ScrollView>
+
+            {(isOwnProfile || isFollowing) ? (
+                <FlatList data={userPosts} numColumns={3} keyExtractor={item => item.id} renderItem={renderGridItem} ListEmptyComponent={<Text style={styles.emptyText}>No posts yet.</Text>} />
+            ) : (
+                <View style={styles.privateContainer}>
+                    <Ionicons name="lock-closed-outline" size={50} color="#ccc" />
+                    <Text style={styles.privateText}>This account is private.</Text>
+                    <Text style={styles.privateSub}>Follow to see their photos and trips.</Text>
+                </View>
+            )}
+
+            {/* MODAL */}
+            <Modal visible={!!selectedPost} animationType="fade" transparent={true} onRequestClose={() => setSelectedPost(null)}>
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalCard}>
+                        <TouchableOpacity style={styles.closeBtn} onPress={() => setSelectedPost(null)}><Ionicons name="close" size={28} color="#fff" /></TouchableOpacity>
+                        {selectedPost?.image && <Image source={{ uri: selectedPost.image }} style={styles.modalImage} />}
+                        <View style={styles.modalInfo}>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                                <Text style={styles.modalUsername}>@{targetUserData?.displayName || targetUserData?.email?.split('@')[0]}</Text>
+                                {(selectedPost?.location || selectedPost?.state) && <Text style={styles.modalLocation}>📍 {selectedPost.location || selectedPost.state}</Text>}
+                            </View>
+                            <Text style={styles.modalText}>{selectedPost?.text}</Text>
+
+                            {/* CRASH-PROOF LIKE BUTTON */}
+                            <TouchableOpacity onPress={() => selectedPost && handleLike(selectedPost)} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 15 }}>
+                                <Ionicons name={isPostLiked(selectedPost) ? "heart" : "heart-outline"} size={28} color={isPostLiked(selectedPost) ? "#E53935" : "#fff"} />
+                                <Text style={{ marginLeft: 8, color: '#fff', fontWeight: 'bold' }}>{getLikesCount(selectedPost)} likes</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+        </View>
     );
 }
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#fff' },
-    center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    navHeader: { flexDirection: 'row', alignItems: 'center', padding: 15, paddingTop: 50, backgroundColor: '#fff', elevation: 2 },
-    navTitle: { fontSize: 18, fontWeight: 'bold', marginLeft: 20 },
-    header: { alignItems: 'center', padding: 20, backgroundColor: '#f9f9f9', borderBottomWidth: 1, borderColor: '#eee' },
-    avatarPlaceholder: { width: 80, height: 80, borderRadius: 40, backgroundColor: '#e0e0e0', justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
-    avatarImage: { width: 80, height: 80, borderRadius: 40 },
-    name: { fontSize: 22, fontWeight: 'bold' },
-    bio: { color: '#666', marginBottom: 10, textAlign: 'center' },
-    tagsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', marginBottom: 15 },
-    tagPill: { backgroundColor: '#E0F2F1', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, margin: 3 },
-    tagText: { color: '#00695C', fontSize: 12, fontWeight: '600' },
-
-    // Action Buttons
-    actionRow: { flexDirection: 'row', marginBottom: 15 },
-    actionBtn: { flexDirection: 'row', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 25, alignItems: 'center', marginHorizontal: 5, elevation: 2 },
-    connectBtn: { backgroundColor: '#4CAF50' }, // Green
-    connectedBtn: { backgroundColor: '#e0e0e0', borderWidth: 1, borderColor: '#ccc' }, // Gray
-    msgBtn: { backgroundColor: '#2196F3' }, // Blue
-    btnText: { fontWeight: 'bold', marginLeft: 8 },
-
-    statsRow: { flexDirection: 'row', width: '100%', justifyContent: 'space-around', marginTop: 10 },
-    stat: { alignItems: 'center' },
-    statNum: { fontSize: 18, fontWeight: 'bold', color: '#333' },
-    statLabel: { fontSize: 12, color: '#888' },
-    sectionTitle: { fontSize: 18, fontWeight: 'bold', marginLeft: 20, marginTop: 10, marginBottom: 10 },
-    badgesContainer: { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 20 },
-    badge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFF8E1', padding: 8, borderRadius: 15, marginRight: 10, marginBottom: 10 },
-    badgeText: { marginLeft: 5, fontWeight: 'bold', color: '#F57F17' },
+    topNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15, paddingTop: 50, paddingBottom: 10, borderBottomWidth: 1, borderColor: '#eee' },
+    backBtn: { padding: 5 },
+    navTitle: { fontSize: 20, fontWeight: 'bold', color: '#333' },
+    header: { flexDirection: 'row', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 15, alignItems: 'center' },
+    profileAvatar: { width: 80, height: 80, borderRadius: 40, marginRight: 20 },
+    statsContainer: { flex: 1, flexDirection: 'row', justifyContent: 'space-around' },
+    statBox: { alignItems: 'center' },
+    statNumber: { fontSize: 18, fontWeight: 'bold', color: '#333' },
+    statLabel: { fontSize: 13, color: '#666' },
+    bioSection: { paddingHorizontal: 20, paddingBottom: 20, borderBottomWidth: 1, borderColor: '#eee' },
+    username: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 4 },
+    bio: { fontSize: 14, color: '#444', marginBottom: 15 },
+    followBtn: { paddingVertical: 8, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+    editProfileBtn: { backgroundColor: '#f0f0f0', borderWidth: 1, borderColor: '#ccc', paddingVertical: 8, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+    editProfileText: { fontWeight: 'bold', color: '#333', fontSize: 14 },
+    notFollowingBtn: { backgroundColor: '#4CAF50' },
+    requestedBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#ddd' },
+    followingBtn: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#ddd' },
+    followBtnText: { fontWeight: 'bold', fontSize: 14 },
+    lightText: { color: '#fff' },
+    darkText: { color: '#333' },
+    gridItem: { width: GRID_SIZE, height: GRID_SIZE, borderWidth: 0.5, borderColor: '#fff' },
+    gridImage: { width: '100%', height: '100%' },
+    noImagePlaceholder: { backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center', padding: 10 },
+    noImageText: { fontSize: 10, color: '#888', textAlign: 'center' },
+    emptyText: { textAlign: 'center', marginTop: 50, color: '#888' },
+    privateContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', marginTop: 50 },
+    privateText: { fontSize: 18, fontWeight: 'bold', color: '#333', marginTop: 15 },
+    privateSub: { fontSize: 14, color: '#888', marginTop: 5 },
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' },
+    modalCard: { width: '100%', maxWidth: 500, backgroundColor: '#222', borderRadius: 15, overflow: 'hidden' },
+    closeBtn: { position: 'absolute', top: 15, right: 15, zIndex: 20, padding: 5, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20 },
+    modalImage: { width: '100%', height: width },
+    modalInfo: { padding: 20 },
+    modalUsername: { color: '#4CAF50', fontWeight: 'bold', fontSize: 16 },
+    modalLocation: { color: '#aaa', fontSize: 12 },
+    modalText: { color: '#fff', fontSize: 16, lineHeight: 22 }
 });

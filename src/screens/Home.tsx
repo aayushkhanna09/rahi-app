@@ -1,246 +1,281 @@
 // src/screens/Home.tsx
 import React, { useState, useEffect } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, Image, Modal, TextInput } from 'react-native';
-import * as Location from 'expo-location';
-import * as Turf from '@turf/turf';
-import {
-    collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, setDoc, doc, arrayUnion, getDoc, updateDoc, increment, arrayRemove
-} from 'firebase/firestore';
+import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, ActivityIndicator, Dimensions } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { collection, query, orderBy, onSnapshot, doc, updateDoc, arrayUnion, arrayRemove, increment, addDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, database } from '../config/firebase';
-import { INDIAN_STATES } from '../data/indianStates';
-import { pickImage } from '../config/media';
 import { Ionicons } from '@expo/vector-icons';
-import CommentModal from '../components/CommentModal';
+
+const { width } = Dimensions.get('window');
+
+interface Post {
+    id: string;
+    uid: string;
+    displayName?: string;
+    email?: string;
+    text?: string;
+    image?: string;
+    location?: string;
+    state?: string;
+    photoURL?: string;
+    likes?: string[];
+    timestamp?: any;
+    [key: string]: any;
+}
 
 export default function Home({ navigation }: any) {
-    const [posts, setPosts] = useState<any[]>([]);
-    const [loading, setLoading] = useState(false);
-
-    // Post Creation State
-    const [createModalVisible, setCreateModalVisible] = useState(false);
-    const [postText, setPostText] = useState('');
-    const [locationName, setLocationName] = useState<string | null>(null);
-    const [postImage, setPostImage] = useState<string | null>(null);
-    const [locLoading, setLocLoading] = useState(false);
-
-    // Comments State
-    const [selectedPost, setSelectedPost] = useState<any>(null);
-    const [modalVisible, setModalVisible] = useState(false);
+    const [posts, setPosts] = useState<Post[]>([]);
+    const [loading, setLoading] = useState(true);
+    const currentUser = auth.currentUser;
 
     useEffect(() => {
         const q = query(collection(database, 'posts'), orderBy('timestamp', 'desc'));
         const unsubscribe = onSnapshot(q, (snapshot) => {
-            setPosts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+            const fetchedPosts = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            })) as Post[];
+            setPosts(fetchedPosts);
+            setLoading(false);
+        }, (error) => {
+            console.error("Home Snapshot Error:", error);
+            setLoading(false);
         });
-        return unsubscribe;
+        return () => unsubscribe();
     }, []);
 
-    // --- NEW: Location Tagging Logic (Optional) ---
-    const detectLocation = async () => {
-        setLocLoading(true);
-        try {
-            let { status } = await Location.requestForegroundPermissionsAsync();
-            if (status !== 'granted') { Alert.alert('Permission denied'); return; }
-
-            let loc = await Location.getCurrentPositionAsync({});
-            const userPoint = Turf.point([loc.coords.longitude, loc.coords.latitude]);
-
-            let stateName = "India";
-            Turf.featureEach(INDIAN_STATES as any, (currentFeature) => {
-                if (Turf.booleanPointInPolygon(userPoint, currentFeature as any)) {
-                    stateName = currentFeature.properties?.name || "India";
-                }
-            });
-            setLocationName(stateName);
-        } catch (error: any) { Alert.alert("Error", "Could not fetch location."); }
-        finally { setLocLoading(false); }
-    };
-
-    // --- NEW: Add Photo Logic ---
-    const handleAddPhoto = async () => {
-        const img = await pickImage();
-        if (img) setPostImage(img);
-    };
-
-    // --- NEW: Finalize Post ---
-    const handlePost = async () => {
-        if (!postText && !postImage) { Alert.alert("Empty Post", "Please add text or an image."); return; }
-
-        setLoading(true);
-        try {
-            const userDoc = await getDoc(doc(database, 'users', auth.currentUser!.uid));
-            const userData = userDoc.data();
-
-            // If location was tagged, update user history
-            if (locationName) {
-                const userRef = doc(database, 'users', auth.currentUser!.uid);
-                await setDoc(userRef, { visitedStates: arrayUnion(locationName) }, { merge: true });
-            }
-
-            await addDoc(collection(database, 'posts'), {
-                text: postText,
-                state: locationName || null, // Optional
-                image: postImage || null,
-                uid: auth.currentUser!.uid,
-                displayName: auth.currentUser!.email?.split('@')[0],
-                userPhoto: userData?.photoURL || null,
-                timestamp: serverTimestamp(),
-                likes: 0,
-                likedBy: []
-            });
-
-            // Reset & Close
-            setPostText('');
-            setLocationName(null);
-            setPostImage(null);
-            setCreateModalVisible(false);
-
-        } catch (e: any) {
-            Alert.alert("Error", e.message);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleLike = async (post: any) => {
-        const user = auth.currentUser;
-        if (!user) return;
+    const handleLike = async (post: Post) => {
+        if (!currentUser) return;
         const postRef = doc(database, 'posts', post.id);
-        const isLiked = post.likedBy?.includes(user.uid);
+        const currentLikes = Array.isArray(post.likes) ? post.likes : [];
+        const isLiked = currentLikes.includes(currentUser.uid);
 
-        if (isLiked) {
-            await updateDoc(postRef, { likes: increment(-1), likedBy: arrayRemove(user.uid) });
-        } else {
-            await updateDoc(postRef, { likes: increment(1), likedBy: arrayUnion(user.uid) });
+        try {
+            if (isLiked) {
+                await updateDoc(postRef, {
+                    likes: arrayRemove(currentUser.uid),
+                    likeCount: increment(-1)
+                });
+            } else {
+                await updateDoc(postRef, {
+                    likes: arrayUnion(currentUser.uid),
+                    likeCount: increment(1)
+                });
+                if (post.uid !== currentUser.uid) {
+                    await addDoc(collection(database, 'notifications'), {
+                        type: 'like',
+                        senderUid: currentUser.uid,
+                        senderName: currentUser.displayName || currentUser.email?.split('@')[0],
+                        senderPhoto: currentUser.photoURL || null,
+                        receiverUid: post.uid,
+                        postId: post.id,
+                        postImage: post.image,
+                        timestamp: serverTimestamp(),
+                        read: false
+                    });
+                }
+            }
+        } catch (error) {
+            console.error("Error toggling like:", error);
         }
     };
 
-    const renderPost = ({ item }: any) => {
-        const isLiked = item.likedBy?.includes(auth.currentUser?.uid);
+    const renderHeader = () => (
+        <View>
+            <View style={styles.header}>
+                <Text style={styles.headerTitle}>RAही Feed</Text>
+                <TouchableOpacity onPress={() => navigation.navigate('Planner')}>
+                    <Ionicons name="map-outline" size={24} color="#333" />
+                </TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.addPostContainer} onPress={() => navigation.navigate('CreatePost')}>
+                <Image
+                    source={{ uri: currentUser?.photoURL || 'https://via.placeholder.com/150' }}
+                    style={styles.addPostAvatar}
+                />
+                <View style={styles.addPostInputPlaceholder}>
+                    <Text style={styles.addPostPlaceholderText}>Share your travel story...</Text>
+                </View>
+                <Ionicons name="images-outline" size={24} color="#4CAF50" />
+            </TouchableOpacity>
+        </View>
+    );
+
+    const renderPost = ({ item }: { item: Post }) => {
+        const likesArray = Array.isArray(item.likes) ? item.likes : [];
+        const isLiked = likesArray.includes(auth.currentUser?.uid || '');
+        const likeCount = likesArray.length;
+        const profilePic = item.photoURL ? { uri: item.photoURL } : { uri: 'https://via.placeholder.com/150' };
+
+        // Reusable Footer Component
+        const PostFooter = () => (
+            <View style={styles.footer}>
+                <View style={styles.iconRow}>
+                    <TouchableOpacity onPress={() => handleLike(item)} style={styles.iconButton}>
+                        <Ionicons
+                            name={isLiked ? "heart" : "heart-outline"}
+                            size={28}
+                            color={isLiked ? "#E53935" : "#333"}
+                        />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.iconButton}>
+                        <Ionicons name="chatbubble-outline" size={26} color="#333" />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.iconButton}>
+                        <Ionicons name="paper-plane-outline" size={26} color="#333" />
+                    </TouchableOpacity>
+                </View>
+                <Text style={styles.likesText}>
+                    {likeCount} {likeCount === 1 ? 'like' : 'likes'}
+                </Text>
+            </View>
+        );
+
+        // Reusable Caption Component
+        const PostCaption = () => (
+            item.text ? (
+                <View style={styles.captionContainer}>
+                    <Text style={styles.captionText}>
+                        <Text style={styles.captionUsername}>{item.displayName || item.email?.split('@')[0]} </Text>
+                        {item.text}
+                    </Text>
+                </View>
+            ) : null
+        );
+
         return (
-            <View style={styles.card}>
-                <View style={styles.cardHeader}>
+            <View style={styles.postCard}>
+                <View style={styles.postHeader}>
                     <TouchableOpacity
-                        style={{ flexDirection: 'row', alignItems: 'center' }}
+                        style={styles.userInfo}
                         onPress={() => navigation.navigate('UserProfile', { uid: item.uid })}
                     >
-                        {item.userPhoto ? (
-                            <Image source={{ uri: item.userPhoto }} style={styles.avatarImage} />
-                        ) : (
-                            <View style={styles.avatarPlaceholder}><Text style={{ fontSize: 20 }}>👤</Text></View>
-                        )}
+                        <Image source={profilePic} style={styles.avatar} />
                         <View>
-                            <Text style={styles.username}>{item.displayName}</Text>
-                            {item.state && (
-                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                    <Ionicons name="location-sharp" size={10} color="#4CAF50" />
-                                    <Text style={styles.location}>{item.state}</Text>
-                                </View>
-                            )}
+                            <Text style={styles.username}>{item.displayName || item.email?.split('@')[0] || 'User'}</Text>
+                            <Text style={styles.location}>
+                                📍 {item.location || 'Unknown'} {item.state ? `• ${item.state}` : ''}
+                            </Text>
                         </View>
                     </TouchableOpacity>
                 </View>
 
-                <Text style={styles.postText}>{item.text}</Text>
-                {item.image && <Image source={{ uri: item.image }} style={styles.postImage} resizeMode="cover" />}
+                {item.image && (
+                    <Image
+                        source={{ uri: item.image }}
+                        style={styles.postImage}
+                        resizeMode="cover"
+                    />
+                )}
 
-                <View style={styles.cardFooter}>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => handleLike(item)}>
-                        <Ionicons name={isLiked ? "heart" : "heart-outline"} size={24} color={isLiked ? "red" : "#333"} />
-                        <Text style={[styles.actionText, isLiked && { color: 'red' }]}>{item.likes || 0}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => { setSelectedPost(item); setModalVisible(true); }}>
-                        <Ionicons name="chatbubble-outline" size={22} color="#333" />
-                        <Text style={styles.actionText}>Comment</Text>
-                    </TouchableOpacity>
-                </View>
+                {/* CONDITIONAL RENDERING LOGIC */}
+                {item.image ? (
+                    <>
+                        <PostFooter />
+                        <PostCaption />
+                    </>
+                ) : (
+                    <>
+                        <PostCaption />
+                        <PostFooter />
+                    </>
+                )}
+            </View>
+        );
+    };
+
+    if (loading) {
+        return (
+            <View style={styles.loadingContainer}>
+                <ActivityIndicator size="large" color="#4CAF50" />
             </View>
         );
     }
 
     return (
-        <View style={styles.container}>
-            {/* Header with (+) Button */}
-            <View style={styles.header}>
-                <Text style={styles.headerTitle}>RAHī Feed</Text>
-                <TouchableOpacity style={styles.createBtn} onPress={() => setCreateModalVisible(true)}>
-                    <Ionicons name="add" size={24} color="#fff" />
-                </TouchableOpacity>
-            </View>
-
-            <FlatList data={posts} renderItem={renderPost} keyExtractor={item => item.id} contentContainerStyle={{ padding: 10 }} />
-
-            <CommentModal visible={modalVisible} post={selectedPost} onClose={() => setModalVisible(false)} />
-
-            {/* CREATE POST MODAL */}
-            <Modal visible={createModalVisible} animationType="slide" transparent={true}>
-                <View style={styles.modalOverlay}>
-                    <View style={styles.modalContent}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 }}>
-                            <Text style={styles.modalTitle}>New Post</Text>
-                            <TouchableOpacity onPress={() => setCreateModalVisible(false)}><Ionicons name="close" size={24} color="#333" /></TouchableOpacity>
-                        </View>
-
-                        <TextInput
-                            style={styles.input}
-                            placeholder="What's on your mind?"
-                            value={postText}
-                            onChangeText={setPostText}
-                            multiline
-                        />
-
-                        {/* Attachments Row */}
-                        <View style={{ flexDirection: 'row', marginBottom: 15 }}>
-                            <TouchableOpacity style={[styles.attachBtn, locationName && styles.attachActive]} onPress={detectLocation} disabled={locLoading}>
-                                {locLoading ? <ActivityIndicator size="small" color="#4CAF50" /> : <Ionicons name="location-sharp" size={20} color={locationName ? "#fff" : "#4CAF50"} />}
-                                <Text style={[styles.attachText, locationName && { color: '#fff' }]}>{locationName || "Location"}</Text>
-                            </TouchableOpacity>
-
-                            <TouchableOpacity style={[styles.attachBtn, postImage && styles.attachActive]} onPress={handleAddPhoto}>
-                                <Ionicons name="image" size={20} color={postImage ? "#fff" : "#2196F3"} />
-                                <Text style={[styles.attachText, postImage && { color: '#fff' }]}>{postImage ? "Added" : "Photo"}</Text>
-                            </TouchableOpacity>
-                        </View>
-
-                        {postImage && <Image source={{ uri: postImage }} style={styles.previewImage} />}
-
-                        <TouchableOpacity style={styles.postBtn} onPress={handlePost} disabled={loading}>
-                            {loading ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 16 }}>Post</Text>}
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            </Modal>
-
-        </View>
+        <SafeAreaView style={styles.container} edges={['top']}>
+            <FlatList
+                data={posts}
+                keyExtractor={(item) => item.id}
+                renderItem={renderPost}
+                ListHeaderComponent={renderHeader}
+                contentContainerStyle={{ paddingBottom: 20 }}
+                showsVerticalScrollIndicator={false}
+            />
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#f0f2f5' },
-    header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 15, paddingTop: 50, backgroundColor: '#fff', elevation: 2 },
-    headerTitle: { fontSize: 22, fontWeight: 'bold', color: '#4CAF50' },
-    createBtn: { backgroundColor: '#4CAF50', width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
-
-    card: { backgroundColor: '#fff', borderRadius: 10, padding: 15, marginBottom: 10, elevation: 1 },
-    cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
-    avatarPlaceholder: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
-    avatarImage: { width: 40, height: 40, borderRadius: 20, marginRight: 10 },
-    username: { fontWeight: 'bold', fontSize: 16 },
-    location: { color: '#666', fontSize: 12, marginLeft: 2 },
-    postText: { fontSize: 15, lineHeight: 22, marginBottom: 10, color: '#333' },
-    postImage: { width: '100%', height: 250, borderRadius: 10, marginBottom: 10 },
-    cardFooter: { flexDirection: 'row', borderTopWidth: 1, borderColor: '#eee', paddingTop: 10 },
-    actionBtn: { flexDirection: 'row', alignItems: 'center', marginRight: 20 },
-    actionText: { marginLeft: 5, color: '#555', fontSize: 14 },
-
-    // Modal
-    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
-    modalContent: { backgroundColor: '#fff', borderRadius: 20, padding: 20, elevation: 5 },
-    modalTitle: { fontSize: 20, fontWeight: 'bold' },
-    input: { backgroundColor: '#f9f9f9', borderRadius: 10, padding: 15, minHeight: 100, textAlignVertical: 'top', marginBottom: 15, fontSize: 16 },
-    attachBtn: { flexDirection: 'row', alignItems: 'center', padding: 8, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: '#eee', marginRight: 10 },
-    attachActive: { backgroundColor: '#4CAF50', borderColor: '#4CAF50' },
-    attachText: { marginLeft: 5, color: '#555', fontSize: 12, fontWeight: '600' },
-    previewImage: { width: '100%', height: 150, borderRadius: 10, marginBottom: 15 },
-    postBtn: { backgroundColor: '#4CAF50', paddingVertical: 12, borderRadius: 10, alignItems: 'center', marginTop: 10 }
+    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+    header: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        paddingVertical: 15,
+        paddingHorizontal: 15,
+        backgroundColor: '#fff',
+        borderBottomWidth: 1,
+        borderColor: '#eee'
+    },
+    headerTitle: { fontSize: 22, fontWeight: '800', color: '#333' },
+    addPostContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#fff',
+        padding: 15,
+        marginTop: 10,
+        marginBottom: 10,
+        marginHorizontal: 10,
+        borderRadius: 12,
+        elevation: 2,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.1,
+        shadowRadius: 2,
+    },
+    addPostAvatar: { width: 40, height: 40, borderRadius: 20, marginRight: 12, backgroundColor: '#eee' },
+    addPostInputPlaceholder: { flex: 1 },
+    addPostPlaceholderText: { color: '#888', fontSize: 15 },
+    postCard: {
+        backgroundColor: '#fff',
+        marginBottom: 10,
+        elevation: 1,
+        paddingBottom: 10
+    },
+    postHeader: { flexDirection: 'row', alignItems: 'center', padding: 12 },
+    userInfo: { flexDirection: 'row', alignItems: 'center' },
+    avatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#eee', marginRight: 10 },
+    username: { fontWeight: '700', fontSize: 15, color: '#262626' },
+    location: { fontSize: 11, color: '#666', marginTop: 1 },
+    postImage: {
+        width: width,
+        height: 350,
+        backgroundColor: '#f0f0f0'
+    },
+    footer: {
+        paddingHorizontal: 15,
+        marginTop: 10,
+    },
+    iconRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        marginBottom: 8,
+    },
+    iconButton: {
+        marginRight: 18,
+    },
+    likesText: {
+        fontWeight: '700',
+        fontSize: 14,
+        color: '#262626',
+    },
+    captionContainer: {
+        paddingHorizontal: 15,
+        marginTop: 10, // Increased slightly for better text separation
+        marginBottom: 5
+    },
+    captionText: { fontSize: 14, color: '#333', lineHeight: 20 },
+    captionUsername: { fontWeight: '700' },
 });

@@ -22,6 +22,7 @@ import Conversation from './src/screens/Conversation';
 import Profile from './src/screens/Profile';
 import UserProfile from './src/screens/UserProfile';
 import EditProfile from './src/screens/EditProfile';
+import CreatePost from './src/screens/CreatePost';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
@@ -118,10 +119,12 @@ export default function App() {
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {user ? (
           <>
+
             <Stack.Screen name="Main" component={AppNavigator} />
             <Stack.Screen name="UserProfile" component={UserProfile} />
             <Stack.Screen name="Conversation" component={Conversation} />
             <Stack.Screen name="PrivateChat" component={Conversation} />
+            <Stack.Screen name="CreatePost" component={CreatePost} options={{ title: 'New Post' }} />
             <Stack.Screen
               name="EditProfile"
               component={EditProfile}
