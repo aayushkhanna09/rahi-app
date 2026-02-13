@@ -21,6 +21,7 @@ import Chat from './src/screens/Chat';
 import Conversation from './src/screens/Conversation';
 import Profile from './src/screens/Profile';
 import UserProfile from './src/screens/UserProfile';
+import EditProfile from './src/screens/EditProfile';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
@@ -121,6 +122,11 @@ export default function App() {
             <Stack.Screen name="UserProfile" component={UserProfile} />
             <Stack.Screen name="Conversation" component={Conversation} />
             <Stack.Screen name="PrivateChat" component={Conversation} />
+            <Stack.Screen
+              name="EditProfile"
+              component={EditProfile}
+              options={{ title: 'Edit Profile' }}
+            />
           </>
         ) : (
           <Stack.Screen name="Login" component={Login} />

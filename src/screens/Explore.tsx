@@ -1,201 +1,234 @@
 // src/screens/Explore.tsx
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, TextInput, ActivityIndicator, Alert } from 'react-native';
-import { collection, query, onSnapshot } from 'firebase/firestore';
-import { database } from '../config/firebase';
+import { View, Text, TextInput, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, Image, Dimensions, Modal } from 'react-native';
+import { collection, query, getDocs, limit, orderBy, where } from 'firebase/firestore';
+import { database, auth } from '../config/firebase';
 import { Ionicons } from '@expo/vector-icons';
 
-// --- PLACES DATA ---
-const PLACES = [
-    { id: '1', name: 'Jibhi', state: 'Himachal', tag: 'Nature', image: 'https://images.unsplash.com/photo-1626621341120-20d716e94069?w=500' },
-    { id: '2', name: 'Gokarna', state: 'Karnataka', tag: 'Beaches', image: 'https://images.unsplash.com/photo-1590050752117-238cb0fb12b1?w=500' },
-    { id: '3', name: 'Varkala', state: 'Kerala', tag: 'Relax', image: 'https://images.unsplash.com/photo-1591529865715-992e5927376c?w=500' },
-    { id: '4', name: 'Ziro Valley', state: 'Arunachal', tag: 'Culture', image: 'https://images.unsplash.com/photo-1625299499870-8735392e2764?w=500' },
-    { id: '5', name: 'Munnar', state: 'Kerala', tag: 'Nature', image: 'https://images.unsplash.com/photo-1596323187680-77458390892d?w=500' },
-    { id: '6', name: 'Hampi', state: 'Karnataka', tag: 'History', image: 'https://images.unsplash.com/photo-1620766182966-c6eb5ed2b788?w=500' },
-];
+const { width } = Dimensions.get('window');
+const GRID_SIZE = width / 3;
+
+interface Post {
+    id: string;
+    state?: string;
+    text?: string;
+    image?: string;
+    location?: string;
+    isRecommendation?: boolean;
+    [key: string]: any;
+}
 
 export default function Explore({ navigation }: any) {
-    const [activeTab, setActiveTab] = useState<'places' | 'people'>('places');
-    const [leaderboardType, setLeaderboardType] = useState<'global' | 'friends'>('global');
-    const [search, setSearch] = useState('');
-    const [users, setUsers] = useState<any[]>([]);
-    const [loading, setLoading] = useState(true);
+    const [searchQuery, setSearchQuery] = useState('');
+    const [activeTab, setActiveTab] = useState<'users' | 'posts'>('users');
 
-    // --- FETCH USERS ---
+    // Data States
+    const [discoverPosts, setDiscoverPosts] = useState<any[]>([]);
+    const [userResults, setUserResults] = useState<any[]>([]);
+    const [postResults, setPostResults] = useState<any[]>([]);
+    const [loading, setLoading] = useState(false);
+
+    // Post Modal State
+    const [selectedPost, setSelectedPost] = useState<any>(null);
+
     useEffect(() => {
-        const q = query(collection(database, 'users'));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            const userList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            const rankedUsers = userList.sort((a: any, b: any) => (b.visitedStates?.length || 0) - (a.visitedStates?.length || 0));
-            setUsers(rankedUsers);
-            setLoading(false);
-        });
-        return unsubscribe;
+        fetchDiscoverGrid();
     }, []);
 
-    // --- RENDER PLACES ---
-    const renderPlaces = () => {
-        const filteredPlaces = PLACES.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
-        return (
-            <View style={{ flex: 1 }}>
-                <View style={styles.searchBar}>
-                    <Ionicons name="search" size={20} color="#666" />
-                    <TextInput
-                        placeholder="Search hidden gems..."
-                        style={styles.input}
-                        value={search}
-                        onChangeText={setSearch}
-                    />
-                </View>
-                <FlatList
-                    key="places-grid" // <--- CRITICAL FIX: Unique Key
-                    data={filteredPlaces}
-                    keyExtractor={item => item.id}
-                    numColumns={2} // <--- This forces Grid Layout
-                    contentContainerStyle={{ padding: 10 }}
-                    renderItem={({ item }) => (
-                        <TouchableOpacity
-                            style={styles.placeCard}
-                            onPress={() => Alert.alert("Suggestion", `Visit ${item.name}! Perfect for ${item.tag}.`)}
-                        >
-                            <Image source={{ uri: item.image }} style={styles.placeImage} />
-                            <View style={styles.placeOverlay}>
-                                <Text style={styles.placeTitle}>{item.name}</Text>
-                                <Text style={styles.placeSubtitle}>{item.state}</Text>
-                            </View>
-                        </TouchableOpacity>
-                    )}
-                />
-            </View>
-        );
+    // 1. Fetch Images for the IG-style Grid
+    const fetchDiscoverGrid = async () => {
+        setLoading(true);
+        try {
+            const q = query(collection(database, 'posts'), orderBy('timestamp', 'desc'), limit(30));
+            const snapshot = await getDocs(q);
+            // Only keep posts that actually have an image for the grid
+            const postsWithImages = snapshot.docs
+                .map(doc => ({ id: doc.id, ...doc.data() }))
+                .filter((post: Post) => post.image);
+
+            setDiscoverPosts(postsWithImages);
+        } catch (error) { console.error(error); }
+        finally { setLoading(false); }
     };
 
-    // --- RENDER LEADERBOARD ---
-    const renderLeaderboard = () => {
-        if (loading) return <ActivityIndicator color="#4CAF50" style={{ marginTop: 50 }} />;
+    // 2. Handle Live Search
+    const handleSearch = async (text: string) => {
+        setSearchQuery(text);
+        if (text.trim() === '') {
+            setUserResults([]);
+            setPostResults([]);
+            return;
+        }
 
-        const filteredUsers = leaderboardType === 'global'
-            ? users
-            : users.filter(u => (u.visitedStates?.length || 0) >= 2);
+        setLoading(true);
+        const searchLower = text.toLowerCase();
 
-        return (
-            <View style={{ flex: 1 }}>
-                <View style={styles.subTabContainer}>
-                    <TouchableOpacity
-                        style={[styles.subTab, leaderboardType === 'global' && styles.activeSubTab]}
-                        onPress={() => setLeaderboardType('global')}
-                    >
-                        <Text style={[styles.subTabText, leaderboardType === 'global' && styles.activeSubTabText]}>Global 🌎</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.subTab, leaderboardType === 'friends' && styles.activeSubTab]}
-                        onPress={() => setLeaderboardType('friends')}
-                    >
-                        <Text style={[styles.subTabText, leaderboardType === 'friends' && styles.activeSubTabText]}>Friends 👥</Text>
-                    </TouchableOpacity>
-                </View>
-
-                <FlatList
-                    key="leaderboard-list" // <--- CRITICAL FIX: Unique Key
-                    data={filteredUsers}
-                    keyExtractor={item => item.id}
-                    numColumns={1} // <--- This forces List Layout
-                    contentContainerStyle={{ padding: 15 }}
-                    ListEmptyComponent={<Text style={{ textAlign: 'center', marginTop: 20, color: '#888' }}>No friends active yet!</Text>}
-                    renderItem={({ item, index }) => {
-                        let rankIcon = null;
-                        if (index === 0) rankIcon = '🥇';
-                        else if (index === 1) rankIcon = '🥈';
-                        else if (index === 2) rankIcon = '🥉';
-
-                        return (
-                            <TouchableOpacity
-                                style={styles.userCard}
-                                onPress={() => navigation.navigate('UserProfile', { uid: item.id })}
-                            >
-                                <View style={styles.rankContainer}>
-                                    {rankIcon ? <Text style={styles.medal}>{rankIcon}</Text> : <Text style={styles.rankNum}>#{index + 1}</Text>}
-                                </View>
-                                <View style={styles.avatarContainer}>
-                                    {item.photoURL ? (
-                                        <Image source={{ uri: item.photoURL }} style={styles.avatar} />
-                                    ) : (
-                                        <View style={[styles.avatar, { backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center' }]}>
-                                            <Text>👤</Text>
-                                        </View>
-                                    )}
-                                </View>
-                                <View style={styles.userInfo}>
-                                    <Text style={styles.userName}>{item.email?.split('@')[0]}</Text>
-                                    <Text style={styles.userStats}>{item.visitedStates?.length || 0} States Visited</Text>
-                                </View>
-                                <Ionicons name="chevron-forward" size={20} color="#ccc" />
-                            </TouchableOpacity>
-                        );
-                    }}
-                />
-            </View>
-        );
+        try {
+            if (activeTab === 'users') {
+                const q = query(collection(database, 'users'), where('email', '>=', searchLower), where('email', '<=', searchLower + '\uf8ff'), limit(15));
+                const snapshot = await getDocs(q);
+                setUserResults(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })).filter(u => u.id !== auth.currentUser?.uid));
+            } else {
+                // Client-side filter for posts (matching location, state, or text)
+                const q = query(collection(database, 'posts'), orderBy('timestamp', 'desc'), limit(50));
+                const snapshot = await getDocs(q);
+                const filteredPosts = snapshot.docs
+                    .map(doc => ({ id: doc.id, ...doc.data() }))
+                    .filter((post: Post) =>
+                        post.state?.toLowerCase().includes(searchLower) ||
+                        post.location?.toLowerCase().includes(searchLower) ||
+                        post.text?.toLowerCase().includes(searchLower) ||
+                        (post.isRecommendation && searchLower.includes('recommend'))
+                    );
+                setPostResults(filteredPosts);
+            }
+        } catch (error) { console.error(error); }
+        finally { setLoading(false); }
     };
+
+    // Re-run search if tab changes while typing
+    useEffect(() => {
+        if (searchQuery) handleSearch(searchQuery);
+    }, [activeTab]);
+
+    // --- RENDERERS ---
+
+    const renderGridItem = ({ item }: any) => (
+        <TouchableOpacity onPress={() => setSelectedPost(item)}>
+            <Image source={{ uri: item.image }} style={styles.gridImage} />
+        </TouchableOpacity>
+    );
+
+    const renderUserItem = ({ item }: any) => (
+        <TouchableOpacity style={styles.listItem} onPress={() => navigation.navigate('UserProfile', { uid: item.id })}>
+            {item.photoURL ? <Image source={{ uri: item.photoURL }} style={styles.avatar} /> : <View style={styles.avatarPlaceholder}><Text>👤</Text></View>}
+            <View>
+                <Text style={styles.listTitle}>{item.email?.split('@')[0]}</Text>
+                <Text style={styles.listSub}>{item.bio || 'Traveler'}</Text>
+            </View>
+        </TouchableOpacity>
+    );
+
+    const renderPostItem = ({ item }: any) => (
+        <TouchableOpacity style={styles.listItem} onPress={() => setSelectedPost(item)}>
+            <View style={styles.avatarPlaceholder}><Ionicons name={item.isRecommendation ? "star" : "location"} size={20} color={item.isRecommendation ? "#FFD700" : "#888"} /></View>
+            <View style={{ flex: 1 }}>
+                <Text style={styles.listTitle}>{item.location || item.state || 'India'}</Text>
+                <Text style={styles.listSub} numberOfLines={1}>{item.text}</Text>
+            </View>
+            {item.image && <Image source={{ uri: item.image }} style={styles.tinyPreview} />}
+        </TouchableOpacity>
+    );
+
+    const isSearching = searchQuery.trim().length > 0;
 
     return (
         <View style={styles.container}>
+            {/* HEADER & SEARCH */}
             <View style={styles.header}>
-                <Text style={styles.headerTitle}>Discover India 🇮🇳</Text>
-                <View style={styles.tabContainer}>
-                    <TouchableOpacity
-                        style={[styles.tab, activeTab === 'places' && styles.activeTab]}
-                        onPress={() => setActiveTab('places')}
-                    >
-                        <Text style={[styles.tabText, activeTab === 'places' && styles.activeTabText]}>Places</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                        style={[styles.tab, activeTab === 'people' && styles.activeTab]}
-                        onPress={() => setActiveTab('people')}
-                    >
-                        <Text style={[styles.tabText, activeTab === 'people' && styles.activeTabText]}>Leaderboard</Text>
-                    </TouchableOpacity>
+                <View style={styles.searchContainer}>
+                    <Ionicons name="search" size={20} color="#888" style={{ marginRight: 10 }} />
+                    <TextInput
+                        style={styles.searchInput}
+                        placeholder="Search users, locations, or tags..."
+                        value={searchQuery}
+                        onChangeText={handleSearch}
+                        autoCapitalize="none"
+                    />
+                    {isSearching && (
+                        <TouchableOpacity onPress={() => handleSearch('')}><Ionicons name="close-circle" size={20} color="#888" /></TouchableOpacity>
+                    )}
                 </View>
+
+                {/* TABS (Only show when searching) */}
+                {isSearching && (
+                    <View style={styles.tabContainer}>
+                        <TouchableOpacity style={[styles.tab, activeTab === 'users' && styles.activeTab]} onPress={() => setActiveTab('users')}>
+                            <Text style={[styles.tabText, activeTab === 'users' && styles.activeTabText]}>Users</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.tab, activeTab === 'posts' && styles.activeTab]} onPress={() => setActiveTab('posts')}>
+                            <Text style={[styles.tabText, activeTab === 'posts' && styles.activeTabText]}>Places & Posts</Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
             </View>
 
-            {activeTab === 'places' ? renderPlaces() : renderLeaderboard()}
+            {/* CONTENT */}
+            {loading && isSearching ? (
+                <ActivityIndicator size="large" color="#4CAF50" style={{ marginTop: 50 }} />
+            ) : !isSearching ? (
+                // DEFAULT: IG Grid
+                <FlatList
+                    key="grid-view"
+                    data={discoverPosts}
+                    numColumns={3}
+                    keyExtractor={item => item.id}
+                    renderItem={renderGridItem}
+                    ListHeaderComponent={<Text style={styles.exploreTitle}>Discover India 🇮🇳</Text>}
+                />
+            ) : (
+                // SEARCH RESULTS
+                <FlatList
+                    key={`list-view-${activeTab}`}
+                    data={activeTab === 'users' ? userResults : postResults}
+                    keyExtractor={item => item.id}
+                    renderItem={activeTab === 'users' ? renderUserItem : renderPostItem}
+                    contentContainerStyle={{ padding: 10 }}
+                    ListEmptyComponent={<Text style={{ textAlign: 'center', marginTop: 50, color: '#888' }}>No results found.</Text>}
+                />
+            )}
+
+            {/* POST DETAIL MODAL */}
+            <Modal visible={!!selectedPost} animationType="fade" transparent={true} onRequestClose={() => setSelectedPost(null)}>
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalCard}>
+                        <TouchableOpacity style={styles.closeBtn} onPress={() => setSelectedPost(null)}>
+                            <Ionicons name="close" size={28} color="#fff" />
+                        </TouchableOpacity>
+                        {selectedPost?.image && <Image source={{ uri: selectedPost.image }} style={styles.modalImage} />}
+                        <View style={styles.modalInfo}>
+                            <Text style={styles.modalUsername}>@{selectedPost?.displayName || 'User'}</Text>
+                            {(selectedPost?.location || selectedPost?.state) && (
+                                <Text style={styles.modalLocation}>📍 {selectedPost.location || selectedPost.state}</Text>
+                            )}
+                            <Text style={styles.modalText}>{selectedPost?.text}</Text>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#f5f5f5' },
-    header: { padding: 20, paddingTop: 50, backgroundColor: '#fff', borderBottomWidth: 1, borderColor: '#eee' },
-    headerTitle: { fontSize: 24, fontWeight: 'bold', color: '#4CAF50', textAlign: 'center', marginBottom: 15 },
+    container: { flex: 1, backgroundColor: '#fff' },
+    header: { padding: 15, paddingTop: 60, backgroundColor: '#fff', elevation: 2, zIndex: 10 },
+    searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f0f0f0', borderRadius: 10, paddingHorizontal: 15, height: 45 },
+    searchInput: { flex: 1, fontSize: 16, color: '#333' },
 
-    tabContainer: { flexDirection: 'row', backgroundColor: '#f0f0f0', borderRadius: 25, padding: 4 },
-    tab: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 20 },
-    activeTab: { backgroundColor: '#fff', elevation: 2 },
-    tabText: { fontWeight: '600', color: '#888' },
+    tabContainer: { flexDirection: 'row', marginTop: 15 },
+    tab: { flex: 1, paddingBottom: 10, alignItems: 'center' },
+    activeTab: { borderBottomWidth: 2, borderColor: '#4CAF50' },
+    tabText: { fontSize: 14, color: '#888', fontWeight: 'bold' },
     activeTabText: { color: '#4CAF50' },
 
-    subTabContainer: { flexDirection: 'row', justifyContent: 'center', marginVertical: 15 },
-    subTab: { paddingVertical: 6, paddingHorizontal: 20, borderRadius: 20, marginHorizontal: 5, borderWidth: 1, borderColor: '#ddd' },
-    activeSubTab: { backgroundColor: '#4CAF50', borderColor: '#4CAF50' },
-    subTabText: { color: '#666', fontWeight: '600' },
-    activeSubTabText: { color: '#fff' },
+    exploreTitle: { fontSize: 18, fontWeight: 'bold', margin: 15, color: '#333' },
+    gridImage: { width: GRID_SIZE, height: GRID_SIZE, borderWidth: 0.5, borderColor: '#fff' },
 
-    searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', padding: 12, margin: 15, borderRadius: 10, elevation: 1 },
-    input: { marginLeft: 10, flex: 1, fontSize: 16 },
-    placeCard: { flex: 1, margin: 5, height: 180, borderRadius: 15, overflow: 'hidden', backgroundColor: '#eee' },
-    placeImage: { width: '100%', height: '100%' },
-    placeOverlay: { position: 'absolute', bottom: 0, width: '100%', backgroundColor: 'rgba(0,0,0,0.4)', padding: 10 },
-    placeTitle: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-    placeSubtitle: { color: '#ddd', fontSize: 12 },
+    listItem: { flexDirection: 'row', alignItems: 'center', padding: 15, borderBottomWidth: 1, borderColor: '#eee' },
+    avatar: { width: 40, height: 40, borderRadius: 20, marginRight: 15 },
+    avatarPlaceholder: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center', marginRight: 15 },
+    listTitle: { fontSize: 16, fontWeight: 'bold', color: '#333' },
+    listSub: { fontSize: 13, color: '#888', marginTop: 2 },
+    tinyPreview: { width: 40, height: 40, borderRadius: 5, marginLeft: 10 },
 
-    userCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', padding: 15, borderRadius: 15, marginBottom: 10, elevation: 1 },
-    rankContainer: { width: 40, alignItems: 'center' },
-    rankNum: { fontSize: 16, fontWeight: 'bold', color: '#555' },
-    medal: { fontSize: 24 },
-    avatarContainer: { marginRight: 15 },
-    avatar: { width: 50, height: 50, borderRadius: 25 },
-    userInfo: { flex: 1 },
-    userName: { fontSize: 16, fontWeight: 'bold', color: '#333' },
-    userStats: { fontSize: 13, color: '#666' }
+    modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center' },
+    modalCard: { width: '100%', maxWidth: 500, backgroundColor: '#222', borderRadius: 15, overflow: 'hidden' },
+    closeBtn: { position: 'absolute', top: 15, right: 15, zIndex: 20, padding: 5, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20 },
+    modalImage: { width: '100%', height: width },
+    modalInfo: { padding: 20 },
+    modalUsername: { color: '#4CAF50', fontWeight: 'bold', fontSize: 16 },
+    modalLocation: { color: '#aaa', fontSize: 12, marginBottom: 10 },
+    modalText: { color: '#fff', fontSize: 16, lineHeight: 22 }
 });
