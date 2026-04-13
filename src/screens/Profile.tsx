@@ -1,9 +1,9 @@
 // src/screens/Profile.tsx
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, FlatList, TouchableOpacity, Dimensions, ActivityIndicator, Modal, Alert, TextInput } from 'react-native';
+import { View, Text, StyleSheet, Image, FlatList, TouchableOpacity, Dimensions, ActivityIndicator, Modal, Alert, TextInput, ScrollView } from 'react-native';
 import { collection, query, where, doc, getDoc, onSnapshot, deleteDoc, updateDoc, writeBatch, arrayRemove, arrayUnion, orderBy, limit, getDocs, increment } from 'firebase/firestore';
 import { auth, database } from '../config/firebase';
-import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -18,6 +18,7 @@ interface Post {
     displayName?: string;
     likes?: string[]; // Array of User IDs
     uid?: string;
+    timestamp?: number; // Added for sorting the polyline
     [key: string]: any;
 }
 
@@ -27,12 +28,15 @@ const GRID_SIZE = width / 3;
 export default function Profile({ navigation }: any) {
     const [userData, setUserData] = useState<any>(null);
     const [userPosts, setUserPosts] = useState<any[]>([]);
+    const [savedTrips, setSavedTrips] = useState<any[]>([]);
     const [uniqueStatesCount, setUniqueStatesCount] = useState(0);
-    const [activeTab, setActiveTab] = useState<'grid' | 'map'>('grid');
+    const [visitedStatesList, setVisitedStatesList] = useState<string[]>([]); // ADDED: To store the list of states
+    const [activeTab, setActiveTab] = useState<'grid' | 'map' | 'trips'>('grid');
     const [loading, setLoading] = useState(true);
 
     // Selection & Edit States
     const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+    const [selectedTrip, setSelectedTrip] = useState<any | null>(null);
     const [editModalVisible, setEditModalVisible] = useState(false);
     const [editText, setEditText] = useState('');
     const [editLocation, setEditLocation] = useState('');
@@ -43,6 +47,7 @@ export default function Profile({ navigation }: any) {
     const [followType, setFollowType] = useState<'followers' | 'following' | null>(null);
     const [followUsers, setFollowUsers] = useState<any[]>([]);
     const [loadingFollows, setLoadingFollows] = useState(false);
+    const [statesModalVisible, setStatesModalVisible] = useState(false); // ADDED: Modal visibility for states
 
     // Activity state
     const [activityModalVisible, setActivityModalVisible] = useState(false);
@@ -60,34 +65,39 @@ export default function Profile({ navigation }: any) {
             if (userDoc.exists()) setUserData(userDoc.data());
         });
 
+        // Sync Posts & Calculate States
         const postsQuery = query(collection(database, 'posts'), where('uid', '==', currentUser.uid));
         const unsubscribePosts = onSnapshot(postsQuery, (postSnapshot) => {
             const posts = postSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post));
-            posts.sort((a: any, b: any) => b.timestamp - a.timestamp);
+            posts.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0)); // Keep grid sorted newest first
             setUserPosts(posts);
             
-            // Calculate unique states based on current posts
             const states = new Set(posts.map((p: any) => p.state).filter(Boolean));
             setUniqueStatesCount(states.size);
-            
+            setVisitedStatesList(Array.from(states) as string[]); // ADDED: Update the list of visited states
             setLoading(false);
         });
 
-        return () => { unsubscribeUser(); unsubscribePosts(); };
+        // Sync AI Trips
+        const tripsQuery = query(collection(database, 'trips'), where('uid', '==', currentUser.uid), orderBy('createdAt', 'desc'));
+        const unsubscribeTrips = onSnapshot(tripsQuery, (tripSnapshot) => {
+            const trips = tripSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setSavedTrips(trips);
+        });
+
+        return () => { 
+            unsubscribeUser(); 
+            unsubscribePosts(); 
+            unsubscribeTrips();
+        };
     }, []);
 
-    // --- AUTO-SYNC LEADERBOARD FIX ---
-    // If the locally calculated states differ from the database, fix the database silently.
+    // Auto-Sync state count to database for leaderboard
     useEffect(() => {
         const currentUser = auth.currentUser;
-        if (!currentUser || !userData) return;
-
-        // Compare the real count against the database count
-        if (userData.statesCount !== uniqueStatesCount) {
-            const userRef = doc(database, 'users', currentUser.uid);
-            updateDoc(userRef, { 
-                statesCount: uniqueStatesCount 
-            }).catch(e => console.error("Auto-sync error:", e));
+        if (currentUser && userData && userData.statesCount !== uniqueStatesCount) {
+            updateDoc(doc(database, 'users', currentUser.uid), { statesCount: uniqueStatesCount })
+                .catch(e => console.error("Auto-sync error:", e));
         }
     }, [uniqueStatesCount, userData?.statesCount]);
 
@@ -101,36 +111,22 @@ export default function Profile({ navigation }: any) {
         const combinedActivity: any[] = [];
 
         try {
-            // 1. Fetch Follow Requests
             const requestUids = userData?.followRequests || [];
             if (requestUids.length > 0) {
                 const fetchedRequests = await Promise.all(requestUids.map(async (uid: string) => {
                     const docSnap = await getDoc(doc(database, 'users', uid));
-                    return docSnap.exists() ? {
-                        id: docSnap.id,
-                        type: 'follow_request',
-                        ...docSnap.data(),
-                        timestamp: Date.now()
-                    } : null;
+                    return docSnap.exists() ? { id: docSnap.id, type: 'follow_request', ...docSnap.data(), timestamp: Date.now() } : null;
                 }));
                 combinedActivity.push(...fetchedRequests.filter(Boolean));
             }
 
-            // 2. Fetch Notifications
-            const q = query(
-                collection(database, 'notifications'),
-                where('receiverUid', '==', currentUser.uid),
-                orderBy('timestamp', 'desc'),
-                limit(20)
-            );
-
+            const q = query(collection(database, 'notifications'), where('receiverUid', '==', currentUser.uid), orderBy('timestamp', 'desc'), limit(20));
             const notificationSnaps = await getDocs(q);
             const fetchedNotifs = notificationSnaps.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             combinedActivity.push(...fetchedNotifs);
 
             combinedActivity.sort((a, b) => b.timestamp - a.timestamp);
             setActivityList(combinedActivity);
-
         } catch (error) { console.error("Error fetching activity", error); }
         finally { setLoadingActivity(false); }
     };
@@ -140,10 +136,8 @@ export default function Profile({ navigation }: any) {
         if (!currentUser) return;
         try {
             const batch = writeBatch(database);
-            const currentUserRef = doc(database, 'users', currentUser.uid);
-            const requesterRef = doc(database, 'users', requesterId);
-            batch.update(currentUserRef, { followRequests: arrayRemove(requesterId), followers: arrayUnion(requesterId) });
-            batch.update(requesterRef, { following: arrayUnion(currentUser.uid) });
+            batch.update(doc(database, 'users', currentUser.uid), { followRequests: arrayRemove(requesterId), followers: arrayUnion(requesterId) });
+            batch.update(doc(database, 'users', requesterId), { following: arrayUnion(currentUser.uid) });
             await batch.commit();
             setActivityList(prev => prev.filter(item => item.id !== requesterId));
         } catch (error) { console.error(error); }
@@ -158,7 +152,6 @@ export default function Profile({ navigation }: any) {
         } catch (error) { console.error(error); }
     };
 
-    // --- CRASH-PROOF LIKE FUNCTION ---
     const handleLike = async (post: Post) => {
         const currentUser = auth.currentUser;
         if (!currentUser) return;
@@ -167,11 +160,7 @@ export default function Profile({ navigation }: any) {
         const currentLikes = Array.isArray(post.likes) ? post.likes : [];
         const isLiked = currentLikes.includes(currentUser.uid);
 
-        // UI Optimistic Update
-        const updatedLikes = isLiked
-            ? currentLikes.filter(id => id !== currentUser.uid)
-            : [...currentLikes, currentUser.uid];
-
+        const updatedLikes = isLiked ? currentLikes.filter(id => id !== currentUser.uid) : [...currentLikes, currentUser.uid];
         setSelectedPost({ ...post, likes: updatedLikes });
 
         try {
@@ -183,18 +172,9 @@ export default function Profile({ navigation }: any) {
         } catch (error) { console.error("Error toggling like:", error); }
     };
 
-    // --- SAFE LIKE HELPERS ---
-    const getLikesCount = (post: Post | null) => {
-        if (!post || !Array.isArray(post.likes)) return 0;
-        return post.likes.length;
-    };
+    const getLikesCount = (post: Post | null) => (!post || !Array.isArray(post.likes)) ? 0 : post.likes.length;
+    const isPostLiked = (post: Post | null) => (!post || !Array.isArray(post.likes)) ? false : post.likes.includes(auth.currentUser?.uid || '');
 
-    const isPostLiked = (post: Post | null) => {
-        if (!post || !Array.isArray(post.likes)) return false;
-        return post.likes.includes(auth.currentUser?.uid || '');
-    };
-
-    // --- EXISTING ACTIONS ---
     const handleLongPress = (post: Post) => {
         Alert.alert("Post Options", "What would you like to do with this post?", [
             { text: "Edit Post", onPress: () => openEditModal(post) },
@@ -224,26 +204,15 @@ export default function Profile({ navigation }: any) {
     const confirmDelete = (post: Post) => {
         Alert.alert("Delete Post", "Are you sure? This cannot be undone.", [
             { text: "Cancel", style: "cancel" },
-            { text: "Delete", style: "destructive", onPress: () => deletePost(post.id) }
+            { text: "Delete", style: "destructive", onPress: async () => { await deleteDoc(doc(database, 'posts', post.id)); setSelectedPost(null); } }
         ]);
-    };
-
-    const deletePost = async (postId: string) => {
-        try {
-            await deleteDoc(doc(database, 'posts', postId));
-            setSelectedPost(null);
-        } catch (error) { Alert.alert("Error", "Could not delete post."); }
     };
 
     const fetchFollowData = async (type: 'followers' | 'following') => {
         setFollowType(type);
         setLoadingFollows(true);
         const uids = userData?.[type] || [];
-        if (uids.length === 0) {
-            setFollowUsers([]);
-            setLoadingFollows(false);
-            return;
-        }
+        if (uids.length === 0) { setFollowUsers([]); setLoadingFollows(false); return; }
         try {
             const fetchedUsers = await Promise.all(uids.map(async (uid: string) => {
                 const docSnap = await getDoc(doc(database, 'users', uid));
@@ -255,7 +224,6 @@ export default function Profile({ navigation }: any) {
     };
 
     // --- RENDERERS ---
-
     const renderGridItem = ({ item }: { item: Post }) => (
         <TouchableOpacity style={styles.gridItem} onPress={() => setSelectedPost(item)} onLongPress={() => handleLongPress(item)}>
             {item.image ? (
@@ -268,11 +236,18 @@ export default function Profile({ navigation }: any) {
         </TouchableOpacity>
     );
 
+    const renderTripItem = ({ item }: any) => (
+        <TouchableOpacity style={styles.tripCard} onPress={() => setSelectedTrip(item)}>
+            <View style={styles.tripCardInfo}>
+                <Text style={styles.tripCardTitle}>{item.itinerary?.title || `Trip to ${item.destination}`}</Text>
+                <Text style={styles.tripCardSub}>{item.duration} Days • {item.budget} Budget</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color="#ccc" />
+        </TouchableOpacity>
+    );
+
     const renderFollowUser = ({ item }: any) => (
-        <TouchableOpacity style={styles.followListItem} onPress={() => {
-            setFollowType(null);
-            navigation.navigate('UserProfile', { uid: item.id });
-        }}>
+        <TouchableOpacity style={styles.followListItem} onPress={() => { setFollowType(null); navigation.navigate('UserProfile', { uid: item.id }); }}>
             {item.photoURL ? <Image source={{ uri: item.photoURL }} style={styles.followAvatar} /> : <View style={styles.followAvatarPlaceholder}><Text>👤</Text></View>}
             <Text style={styles.followEmail}>{item.email?.split('@')[0]}</Text>
         </TouchableOpacity>
@@ -282,10 +257,7 @@ export default function Profile({ navigation }: any) {
         if (item.type === 'follow_request') {
             return (
                 <View style={styles.requestListItem}>
-                    <TouchableOpacity style={styles.activityUserInfo} onPress={() => {
-                        setActivityModalVisible(false);
-                        navigation.navigate('UserProfile', { uid: item.id });
-                    }}>
+                    <TouchableOpacity style={styles.activityUserInfo} onPress={() => { setActivityModalVisible(false); navigation.navigate('UserProfile', { uid: item.id }); }}>
                         {item.photoURL ? <Image source={{ uri: item.photoURL }} style={styles.followAvatar} /> : <View style={styles.followAvatarPlaceholder}><Text>👤</Text></View>}
                         <View>
                             <Text style={styles.activityUserText}>{item.email?.split('@')[0]}</Text>
@@ -321,30 +293,47 @@ export default function Profile({ navigation }: any) {
     const userTags = userData?.tags?.length ? userData.tags : defaultTags;
     const badgeCount = userData?.followRequests?.length || 0;
 
+    // --- JOURNEY LINE PREPARATION ---
+    // Extract coordinates and sort them from oldest to newest to form a continuous path
+    const journeyCoordinates = [...userPosts]
+        .filter(post => post.latitude && post.longitude)
+        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+        .map(post => ({
+            latitude: post.latitude!,
+            longitude: post.longitude!
+        }));
+
     return (
         <SafeAreaView style={styles.container} edges={['top']}>
+            
+            {/* TOP NAVIGATION */}
             <View style={styles.topNav}>
                 <Text style={styles.navTitle}>{userData?.email?.split('@')[0] || 'Profile'}</Text>
                 <View style={styles.navRightIcons}>
-                    
-                    {/* LEADERBOARD TROPHY BUTTON */}
                     <TouchableOpacity onPress={() => navigation.navigate('Leaderboard')} style={styles.menuIcon}>
                         <Ionicons name="trophy-outline" size={26} color="#D4AF37" />
                     </TouchableOpacity>
-
                     <TouchableOpacity onPress={fetchActivity} style={styles.menuIcon}>
                         <Ionicons name="time-outline" size={28} color="#333" />
                         {badgeCount > 0 && <View style={styles.badge}><Text style={styles.badgeText}>{badgeCount}</Text></View>}
                     </TouchableOpacity>
-                    
                     <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.menuIcon}>
                         <Ionicons name="menu" size={32} color="#333" />
                     </TouchableOpacity>
                 </View>
             </View>
 
+            {/* HEADER & STATS */}
             <View style={styles.header}>
-                <Image source={{ uri: userData?.photoURL || 'https://via.placeholder.com/100' }} style={styles.profileAvatar} />
+                {/* FIXED: Reliable Fallback for Profile Image */}
+                {userData?.photoURL ? (
+                    <Image source={{ uri: userData.photoURL }} style={styles.profileAvatar} />
+                ) : (
+                    <View style={[styles.profileAvatar, { backgroundColor: '#eee', justifyContent: 'center', alignItems: 'center' }]}>
+                        <Ionicons name="person" size={40} color="#999" />
+                    </View>
+                )}
+
                 <View style={styles.statsContainer}>
                     <View style={styles.statBox}>
                         <Text style={styles.statNumber}>{userPosts.length}</Text>
@@ -361,12 +350,17 @@ export default function Profile({ navigation }: any) {
                 </View>
             </View>
 
+            {/* BIO & ACHIEVEMENTS */}
             <View style={styles.bioSection}>
                 <Text style={styles.username}>{userData?.displayName || userData?.email?.split('@')[0] || 'User'}</Text>
                 <Text style={styles.bio}>{userData?.bio || 'Living my RAही life ✈️🌍'}</Text>
                 <View style={styles.achievementsRow}>
                     <View style={styles.achievementBadge}><Text style={styles.achievementText}>🏆 {userData?.badges?.length || 0} Badges</Text></View>
-                    <View style={styles.achievementBadge}><Text style={styles.achievementText}>📍 {uniqueStatesCount} States</Text></View>
+                    
+                    {/* FIXED: Made States Badge Clickable */}
+                    <TouchableOpacity style={styles.achievementBadge} onPress={() => setStatesModalVisible(true)}>
+                        <Text style={styles.achievementText}>📍 {uniqueStatesCount} States</Text>
+                    </TouchableOpacity>
                 </View>
                 <View style={styles.tagsRow}>
                     {userTags.map((tag: string, index: number) => (
@@ -375,6 +369,7 @@ export default function Profile({ navigation }: any) {
                 </View>
             </View>
 
+            {/* TAB BAR */}
             <View style={styles.tabBar}>
                 <TouchableOpacity onPress={() => setActiveTab('grid')} style={styles.tab}>
                     <Ionicons name="grid-outline" size={24} color={activeTab === 'grid' ? '#4CAF50' : '#888'} />
@@ -382,12 +377,29 @@ export default function Profile({ navigation }: any) {
                 <TouchableOpacity onPress={() => setActiveTab('map')} style={styles.tab}>
                     <Ionicons name="map-outline" size={24} color={activeTab === 'map' ? '#4CAF50' : '#888'} />
                 </TouchableOpacity>
+                <TouchableOpacity onPress={() => setActiveTab('trips')} style={styles.tab}>
+                    <Ionicons name="briefcase-outline" size={24} color={activeTab === 'trips' ? '#4CAF50' : '#888'} />
+                </TouchableOpacity>
             </View>
 
-            {activeTab === 'grid' ? (
+            {/* TAB CONTENT */}
+            {activeTab === 'grid' && (
                 <FlatList data={userPosts} numColumns={3} keyExtractor={item => item.id} renderItem={renderGridItem} ListEmptyComponent={<Text style={styles.emptyText}>No posts yet.</Text>} />
-            ) : (
+            )}
+
+            {activeTab === 'map' && (
                 <MapView style={styles.map} provider={PROVIDER_GOOGLE} initialRegion={{ latitude: 20.5937, longitude: 78.9629, latitudeDelta: 25.0, longitudeDelta: 25.0 }}>
+                    
+                    {/* THE JOURNEY POLYLINE */}
+                    {journeyCoordinates.length > 1 && (
+                        <Polyline
+                            coordinates={journeyCoordinates}
+                            strokeColor="#E53935"
+                            strokeWidth={3}
+                            lineDashPattern={[5, 5]}
+                        />
+                    )}
+
                     {userPosts.map(post => post.latitude && post.longitude ? (
                         <Marker key={post.id} coordinate={{ latitude: post.latitude, longitude: post.longitude }} title={post.location || post.state} onPress={() => setSelectedPost(post)}>
                             {post.image ? <Image source={{ uri: post.image }} style={styles.mapMarkerImage} /> : <Ionicons name="location" size={30} color="#E53935" />}
@@ -395,6 +407,34 @@ export default function Profile({ navigation }: any) {
                     ) : null)}
                 </MapView>
             )}
+
+            {activeTab === 'trips' && (
+                <FlatList data={savedTrips} keyExtractor={item => item.id} renderItem={renderTripItem} contentContainerStyle={{ padding: 15 }} ListEmptyComponent={<Text style={styles.emptyText}>No saved trips yet. Use the Planner!</Text>} />
+            )}
+
+            {/* --- ALL MODALS --- */}
+
+            {/* ADDED: VISITED STATES MODAL */}
+            <Modal visible={statesModalVisible} transparent animationType="slide" onRequestClose={() => setStatesModalVisible(false)}>
+                <View style={styles.followModalContainer}>
+                    <View style={styles.followModalContent}>
+                        <View style={styles.followModalHeader}>
+                            <Text style={styles.followModalTitle}>States Visited</Text>
+                            <TouchableOpacity onPress={() => setStatesModalVisible(false)}><Ionicons name="close" size={28} color="#333" /></TouchableOpacity>
+                        </View>
+                        <FlatList 
+                            data={visitedStatesList} 
+                            keyExtractor={(item, index) => index.toString()} 
+                            renderItem={({ item }) => (
+                                <View style={styles.followListItem}>
+                                    <Text style={styles.followEmail}>📍 {item}</Text>
+                                </View>
+                            )} 
+                            ListEmptyComponent={<Text style={styles.emptyText}>No states visited yet.</Text>} 
+                        />
+                    </View>
+                </View>
+            </Modal>
 
             {/* ACTIVITY MODAL */}
             <Modal visible={activityModalVisible} transparent animationType="slide" onRequestClose={() => setActivityModalVisible(false)}>
@@ -433,19 +473,13 @@ export default function Profile({ navigation }: any) {
                         <TouchableOpacity style={styles.closeBtn} onPress={() => setSelectedPost(null)}>
                             <Ionicons name="close" size={28} color="#fff" />
                         </TouchableOpacity>
-                        
                         {selectedPost?.image ? <Image source={{ uri: selectedPost.image }} style={styles.modalImage} /> : null}
-                        
                         <View style={styles.modalInfo}>
                             <Text style={styles.modalUsername}>@{selectedPost?.displayName || userData?.email?.split('@')[0]}</Text>
-                            
                             {(selectedPost?.location || selectedPost?.state) ? (
                                 <Text style={styles.modalLocation}>📍 {selectedPost.location || selectedPost.state}</Text>
                             ) : null}
-                            
                             <Text style={styles.modalText}>{selectedPost?.text}</Text>
-
-                            {/* LIKE BUTTON */}
                             <TouchableOpacity onPress={() => selectedPost && handleLike(selectedPost)} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 15 }}>
                                 <Ionicons name={isPostLiked(selectedPost) ? "heart" : "heart-outline"} size={28} color={isPostLiked(selectedPost) ? "#E53935" : "#fff"} />
                                 <Text style={{ marginLeft: 8, color: '#fff', fontWeight: 'bold' }}>{getLikesCount(selectedPost)} likes</Text>
@@ -483,6 +517,37 @@ export default function Profile({ navigation }: any) {
                     </View>
                 </View>
             </Modal>
+
+            {/* AI TRIP DETAIL MODAL */}
+            <Modal visible={!!selectedTrip} animationType="slide" transparent={false} onRequestClose={() => setSelectedTrip(null)}>
+                <SafeAreaView style={{ flex: 1, backgroundColor: '#fff' }}>
+                    <View style={styles.modalHeader}>
+                        <TouchableOpacity onPress={() => setSelectedTrip(null)}><Ionicons name="close" size={28} color="#333" /></TouchableOpacity>
+                        <Text style={styles.modalTitle}>Trip Details</Text>
+                        <View style={{ width: 28 }} />
+                    </View>
+                    <ScrollView contentContainerStyle={{ padding: 20 }}>
+                        <Text style={styles.itineraryTitle}>{selectedTrip?.itinerary?.title}</Text>
+                        {selectedTrip?.itinerary?.days.map((day: any, idx: number) => (
+                            <View key={idx} style={styles.dayCard}>
+                                <Text style={styles.dayTitle}>Day {day.day}: {day.theme}</Text>
+                                <Text style={styles.actText}><Text style={styles.bold}>Morning:</Text> {day.morning}</Text>
+                                <Text style={styles.actText}><Text style={styles.bold}>Afternoon:</Text> {day.afternoon}</Text>
+                                <Text style={styles.actText}><Text style={styles.bold}>Evening:</Text> {day.evening}</Text>
+                            </View>
+                        ))}
+                        <TouchableOpacity style={styles.deleteTripBtn} onPress={() => {
+                            Alert.alert("Delete Trip", "Remove this itinerary?", [
+                                { text: "Cancel" },
+                                { text: "Delete", style: 'destructive', onPress: async () => { await deleteDoc(doc(database, 'trips', selectedTrip.id)); setSelectedTrip(null); } }
+                            ]);
+                        }}>
+                            <Text style={{ color: '#E53935', fontWeight: 'bold' }}>Delete Trip</Text>
+                        </TouchableOpacity>
+                    </ScrollView>
+                </SafeAreaView>
+            </Modal>
+
         </SafeAreaView>
     );
 }
@@ -556,4 +621,16 @@ const styles = StyleSheet.create({
     acceptBtn: { backgroundColor: '#4CAF50', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 8, marginRight: 10 },
     acceptText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
     declineBtn: { backgroundColor: '#f0f0f0', padding: 8, borderRadius: 8 },
+    tripCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f9f9f9', padding: 15, borderRadius: 10, marginBottom: 10 },
+    tripCardInfo: { flex: 1 },
+    tripCardTitle: { fontSize: 16, fontWeight: 'bold' },
+    tripCardSub: { fontSize: 12, color: '#666', marginTop: 4 },
+    modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderColor: '#eee' },
+    modalTitle: { fontSize: 18, fontWeight: 'bold' },
+    itineraryTitle: { fontSize: 24, fontWeight: 'bold', marginBottom: 20, color: '#4CAF50' },
+    dayCard: { marginBottom: 20, padding: 15, backgroundColor: '#f5f5f5', borderRadius: 10 },
+    dayTitle: { fontSize: 16, fontWeight: 'bold', marginBottom: 10, color: '#333' },
+    actText: { fontSize: 14, color: '#444', marginBottom: 5 },
+    bold: { fontWeight: 'bold' },
+    deleteTripBtn: { marginTop: 20, padding: 15, alignItems: 'center', borderTopWidth: 1, borderColor: '#eee' }
 });

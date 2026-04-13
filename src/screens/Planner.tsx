@@ -1,408 +1,234 @@
 // src/screens/Planner.tsx
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, TextInput, StyleSheet, ScrollView, ActivityIndicator, Alert, FlatList } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView, ActivityIndicator, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, addDoc, serverTimestamp, query, where, orderBy, onSnapshot, deleteDoc, doc } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, database } from '../config/firebase';
 
-const TRIP_GENRES = ['Adventure', 'Relaxing', 'Cultural', 'Nightlife', 'Foodie', 'Nature', 'Historical'];
+// 🔑 Groq API key loaded from .env (get yours from console.groq.com)
+const GROQ_API_KEY = process.env.EXPO_PUBLIC_GROQ_API_KEY!; 
 
-interface Trip {
-    id: string;
-    location: string;
-    days: number;
-    dates: string;
-    tags: string[];
-    itinerary: string;
-    [key: string]: any;
+interface DayPlan {
+    day: number;
+    theme: string;
+    morning: string;
+    afternoon: string;
+    evening: string;
 }
 
-export default function TripPlanner() {
-    const [phase, setPhase] = useState<'dashboard' | 'form' | 'choice' | 'editor' | 'view'>('dashboard');
+interface Itinerary {
+    title: string;
+    days: DayPlan[];
+}
 
-    // Dashboard State
-    const [savedTrips, setSavedTrips] = useState<Trip[]>([]);
-    const [loadingTrips, setLoadingTrips] = useState(true);
-    const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
-
-    // Trip Creation Form States
-    const [location, setLocation] = useState('');
-    const [days, setDays] = useState('');
-    const [dates, setDates] = useState('');
-    const [selectedTags, setSelectedTags] = useState<string[]>([]);
-
-    const [plan, setPlan] = useState('');
+export default function Planner({ navigation }: any) {
+    const [destination, setDestination] = useState('');
+    const [days, setDays] = useState('3');
+    const [budget, setBudget] = useState('Moderate');
+    const [vibe, setVibe] = useState('Culture');
+    
     const [loading, setLoading] = useState(false);
-    const [isSaving, setIsSaving] = useState(false);
+    const [itinerary, setItinerary] = useState<Itinerary | null>(null);
+    const [saving, setSaving] = useState(false);
 
-    // --- 1. REAL-TIME LISTENER FOR SAVED TRIPS ---
-    useEffect(() => {
-        const currentUser = auth.currentUser;
-        if (!currentUser) return;
-
-        const q = query(
-            collection(database, 'trips'),
-            where('userId', '==', currentUser.uid),
-            orderBy('timestamp', 'desc')
-        );
-
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            const trips = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Trip));
-            setSavedTrips(trips);
-            setLoadingTrips(false);
-        });
-
-        return () => unsubscribe();
-    }, []);
-
-    // --- ACTIONS ---
-
-    const toggleTag = (tag: string) => {
-        if (selectedTags.includes(tag)) {
-            setSelectedTags(selectedTags.filter(t => t !== tag));
-        } else {
-            setSelectedTags([...selectedTags, tag]);
-        }
-    };
-
-    const handleNext = () => {
-        if (!location.trim() || !days.trim()) {
-            Alert.alert("Required Fields", "Please fill in the location and number of days to proceed.");
-            return;
-        }
-        setPhase('choice');
-    };
-
-    const handleAIGeneration = () => {
+    const generateTrip = async () => {
+        if (!destination.trim()) return Alert.alert("Hold up!", "Please enter a destination.");
+       
         setLoading(true);
-        setPhase('editor');
+        setItinerary(null);
 
-        // MOCK LLM DELAY - Replace with actual backend API call
-        setTimeout(() => {
-            setPlan(
-                `✨ AI Generated Itinerary for ${location} (${days} Days) ✨
+        const prompt = `You are an expert Indian travel planner. Create a ${days}-day itinerary for ${destination}. Budget: ${budget}. Vibe: ${vibe}. 
+        You MUST return the response strictly as a parseable JSON object. 
+        Format:
+        {
+          "title": "A catchy title for the trip",
+          "days": [
+            {
+              "day": 1,
+              "theme": "Day theme",
+              "morning": "Morning activity",
+              "afternoon": "Afternoon activity",
+              "evening": "Evening activity"
+            }
+          ]
+        }`;
 
-Vibes: ${selectedTags.length > 0 ? selectedTags.join(', ') : 'General exploration'}
-Dates: ${dates || 'Flexible'}
-
-Day 1: Arrival & Exploration
-- Morning: Arrive, check-in, and grab local breakfast.
-- Afternoon: Visit the main city square/market.
-- Evening: Dinner at a highly-rated local restaurant.
-
-Day 2: The Main Attractions
-- Morning: Guided tour of the top historical/nature site.
-- Afternoon: Lunch and relaxing walk.
-- Evening: Experiencing the local nightlife.
-
-(Connect your Python LLM backend here!)`
-            );
-            setLoading(false);
-        }, 2000);
-    };
-
-    const handleManualSetup = () => {
-        let template = `Trip to ${location} (${days} Days)\nDates: ${dates || 'TBD'}\nVibes: ${selectedTags.join(', ')}\n\n`;
-        const numDays = parseInt(days) || 1;
-        for (let i = 1; i <= numDays; i++) {
-            template += `Day ${i}:\n- Morning:\n- Afternoon:\n- Evening:\n\n`;
-        }
-        setPlan(template);
-        setPhase('editor');
-    };
-
-    const handleSaveTrip = async () => {
-        const currentUser = auth.currentUser;
-        if (!currentUser) return;
-        if (!plan.trim()) {
-            Alert.alert("Hold on", "Your itinerary is empty!");
-            return;
-        }
-
-        setIsSaving(true);
         try {
-            await addDoc(collection(database, 'trips'), {
-                userId: currentUser.uid,
-                location,
-                days: parseInt(days) || 0,
-                dates,
-                tags: selectedTags,
-                itinerary: plan,
-                timestamp: serverTimestamp(),
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${GROQ_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    model: 'llama-3.1-8b-instant',
+                    messages: [{ role: 'user', content: prompt }],
+                    response_format: { type: "json_object" } // This guarantees perfect JSON
+                })
             });
 
-            Alert.alert("Success!", "Trip saved successfully.");
-            resetPlanner();
-        } catch (error) {
-            console.error("Error saving trip: ", error);
-            Alert.alert("Error", "Could not save your trip. Please try again.");
+            const data = await response.json();
+            
+            if (data.error) throw new Error(data.error.message);
+
+            const parsedItinerary = JSON.parse(data.choices[0].message.content);
+            setItinerary(parsedItinerary);
+
+        } catch (error: any) {
+            console.error(error);
+            Alert.alert("Generation Failed", "Could not generate trip. Try again.");
         } finally {
-            setIsSaving(false);
+            setLoading(false);
         }
     };
 
-    const confirmDeleteTrip = (tripId: string) => {
-        Alert.alert("Delete Trip", "Are you sure you want to delete this itinerary?", [
-            { text: "Cancel", style: "cancel" },
-            { text: "Delete", style: "destructive", onPress: () => deleteTrip(tripId) }
-        ]);
-    };
-
-    const deleteTrip = async (tripId: string) => {
+    const saveTrip = async () => {
+        if (!itinerary || !auth.currentUser) return;
+        setSaving(true);
         try {
-            await deleteDoc(doc(database, 'trips', tripId));
-            if (phase === 'view') setPhase('dashboard');
+            await addDoc(collection(database, 'trips'), {
+                uid: auth.currentUser.uid,
+                destination,
+                budget,
+                vibe,
+                duration: parseInt(days),
+                itinerary,
+                createdAt: serverTimestamp()
+            });
+            Alert.alert("Success!", "Trip saved to your profile.");
+            setItinerary(null); 
+            setDestination('');
         } catch (error) {
-            Alert.alert("Error", "Could not delete trip.");
+            Alert.alert("Error", "Could not save trip.");
+        } finally {
+            setSaving(false);
         }
     };
 
-    const resetPlanner = () => {
-        setPhase('dashboard');
-        setPlan('');
-        setLocation('');
-        setDays('');
-        setDates('');
-        setSelectedTags([]);
-        setSelectedTrip(null);
-    };
-
-    const viewTrip = (trip: Trip) => {
-        setSelectedTrip(trip);
-        setPhase('view');
-    };
-
-    // --- RENDERERS ---
-
-    const renderTripCard = ({ item }: { item: Trip }) => (
-        <TouchableOpacity style={styles.tripCard} onPress={() => viewTrip(item)}>
-            <View style={{ flex: 1 }}>
-                <Text style={styles.tripLocation}>{item.location}</Text>
-                <Text style={styles.tripDates}>{item.days} Days {item.dates ? `• ${item.dates}` : ''}</Text>
-                {item.tags && item.tags.length > 0 ? (
-                    <Text style={styles.tripTags} numberOfLines={1}>
-                        {item.tags.map((t: string) => `#${t}`).join(' ')}
-                    </Text>
-                ) : null}
-            </View>
-            <Ionicons name="chevron-forward" size={24} color="#ccc" />
-        </TouchableOpacity>
+    const renderSelectionRow = (options: string[], state: string, setState: (val: string) => void) => (
+        <View style={styles.row}>
+            {options.map(opt => (
+                <TouchableOpacity 
+                    key={opt} 
+                    style={[styles.pill, state === opt && styles.pillActive]}
+                    onPress={() => setState(opt)}
+                >
+                    <Text style={[styles.pillText, state === opt && styles.pillTextActive]}>{opt}</Text>
+                </TouchableOpacity>
+            ))}
+        </View>
     );
 
     return (
-        <View style={styles.container}>
+        <SafeAreaView style={styles.container} edges={['top']}>
+            <View style={styles.header}>
+                <Text style={styles.headerTitle}>AI Trip Planner ✨</Text>
+            </View>
 
-            {/* PHASE 0: DASHBOARD */}
-            {phase === 'dashboard' && (
-                <View style={styles.dashboardContainer}>
-                    <View style={styles.topNav}>
-                        <Text style={styles.navTitle}>My Trips</Text>
-                        <TouchableOpacity onPress={() => setPhase('form')} style={styles.addBtn}>
-                            <Ionicons name="add" size={28} color="#333" />
-                        </TouchableOpacity>
-                    </View>
-
-                    {loadingTrips ? (
-                        <ActivityIndicator size="large" color="#4CAF50" style={{ marginTop: 50 }} />
-                    ) : savedTrips.length === 0 ? (
-                        <View style={styles.emptyState}>
-                            <Ionicons name="map-outline" size={60} color="#ccc" />
-                            <Text style={styles.emptyText}>No trips planned yet.</Text>
-                            <Text style={styles.emptySubText}>Tap the + icon to start your next adventure!</Text>
-                        </View>
-                    ) : (
-                        <FlatList
-                            data={savedTrips}
-                            keyExtractor={item => item.id}
-                            renderItem={renderTripCard}
-                            contentContainerStyle={{ padding: 20 }}
+            <ScrollView contentContainerStyle={styles.content}>
+                
+                {!itinerary && (
+                    <View style={styles.formCard}>
+                        <Text style={styles.label}>Where to?</Text>
+                        <TextInput 
+                            style={styles.input} 
+                            placeholder="e.g. Manali, Jaipur, Meghalaya" 
+                            value={destination} 
+                            onChangeText={setDestination} 
                         />
-                    )}
-                </View>
-            )}
 
-            {/* PHASE 1: FORM */}
-            {phase === 'form' && (
-                <ScrollView contentContainerStyle={styles.scrollContainer} keyboardShouldPersistTaps="handled">
-                    <View style={styles.headerRow}>
-                        <TouchableOpacity onPress={resetPlanner}>
-                            <Ionicons name="close" size={28} color="#333" />
+                        <Text style={styles.label}>How many days?</Text>
+                        <TextInput 
+                            style={styles.input} 
+                            placeholder="e.g. 3" 
+                            keyboardType="numeric" 
+                            value={days} 
+                            onChangeText={setDays} 
+                        />
+
+                        <Text style={styles.label}>Budget</Text>
+                        {renderSelectionRow(['Backpacker', 'Moderate', 'Luxury'], budget, setBudget)}
+
+                        <Text style={styles.label}>Vibe</Text>
+                        {renderSelectionRow(['Chill', 'Adventure', 'Culture'], vibe, setVibe)}
+
+                        <TouchableOpacity style={styles.generateBtn} onPress={generateTrip} disabled={loading}>
+                            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.generateBtnText}>Generate Itinerary</Text>}
                         </TouchableOpacity>
-                        <Text style={styles.mainTitle}>Plan New Trip</Text>
-                        <View style={{ width: 28 }} />
                     </View>
+                )}
 
-                    <Text style={styles.sectionTitle}>Where to?</Text>
-                    <TextInput style={styles.input} placeholder="e.g. Manali, Goa, Kyoto" value={location} onChangeText={setLocation} />
+                {itinerary && (
+                    <View style={styles.resultContainer}>
+                        <TouchableOpacity style={styles.resetBtn} onPress={() => setItinerary(null)}>
+                            <Ionicons name="arrow-back" size={20} color="#4CAF50" />
+                            <Text style={styles.resetText}>Plan another trip</Text>
+                        </TouchableOpacity>
 
-                    <View style={styles.row}>
-                        <View style={{ flex: 1, marginRight: 10 }}>
-                            <Text style={styles.sectionTitle}>Days</Text>
-                            <TextInput style={styles.input} placeholder="e.g. 5" keyboardType="numeric" value={days} onChangeText={setDays} />
-                        </View>
-                        <View style={{ flex: 1 }}>
-                            <Text style={styles.sectionTitle}>Dates (Optional)</Text>
-                            <TextInput style={styles.input} placeholder="Oct 12 - Oct 17" value={dates} onChangeText={setDates} />
-                        </View>
-                    </View>
+                        <Text style={styles.tripTitle}>{itinerary.title}</Text>
 
-                    <Text style={styles.sectionTitle}>Trip Vibe (Select multiple)</Text>
-                    <View style={styles.tagsContainer}>
-                        {TRIP_GENRES.map(tag => (
-                            <TouchableOpacity
-                                key={tag}
-                                style={[styles.tagBtn, selectedTags.includes(tag) && styles.tagBtnActive]}
-                                onPress={() => toggleTag(tag)}
-                            >
-                                <Text style={[styles.tagText, selectedTags.includes(tag) && styles.tagTextActive]}>{tag}</Text>
-                            </TouchableOpacity>
+                        {itinerary.days.map((day, index) => (
+                            <View key={index} style={styles.dayCard}>
+                                <View style={styles.dayHeader}>
+                                    <Text style={styles.dayTitle}>Day {day.day}</Text>
+                                    <Text style={styles.dayTheme}>{day.theme}</Text>
+                                </View>
+                                
+                                <View style={styles.activityRow}>
+                                    <Ionicons name="sunny-outline" size={20} color="#FFB300" style={styles.activityIcon} />
+                                    <Text style={styles.activityText}><Text style={styles.bold}>Morning:</Text> {day.morning}</Text>
+                                </View>
+                                
+                                <View style={styles.activityRow}>
+                                    <Ionicons name="partly-sunny-outline" size={20} color="#FB8C00" style={styles.activityIcon} />
+                                    <Text style={styles.activityText}><Text style={styles.bold}>Afternoon:</Text> {day.afternoon}</Text>
+                                </View>
+                                
+                                <View style={styles.activityRow}>
+                                    <Ionicons name="moon-outline" size={20} color="#5E35B1" style={styles.activityIcon} />
+                                    <Text style={styles.activityText}><Text style={styles.bold}>Evening:</Text> {day.evening}</Text>
+                                </View>
+                            </View>
                         ))}
-                    </View>
 
-                    <TouchableOpacity style={styles.primaryBtn} onPress={handleNext}>
-                        <Text style={styles.btnText}>Continue</Text>
-                        <Ionicons name="arrow-forward" size={20} color="#fff" style={{ marginLeft: 5 }} />
-                    </TouchableOpacity>
-                </ScrollView>
-            )}
-
-            {/* PHASE 2: CHOICE */}
-            {phase === 'choice' && (
-                <View style={styles.centerContainer}>
-                    <TouchableOpacity style={styles.backBtnAbs} onPress={() => setPhase('form')}>
-                        <Ionicons name="arrow-back" size={24} color="#333" />
-                        <Text style={styles.backText}>Back to Details</Text>
-                    </TouchableOpacity>
-
-                    <Text style={styles.choiceTitle}>How do you want to plan your {days}-day trip to {location}?</Text>
-
-                    <TouchableOpacity style={[styles.modeBtn, { backgroundColor: '#4CAF50' }]} onPress={handleAIGeneration}>
-                        <Ionicons name="sparkles" size={24} color="white" />
-                        <Text style={styles.btnText}>Auto-Plan with AI</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity style={[styles.modeBtn, { backgroundColor: '#333' }]} onPress={handleManualSetup}>
-                        <Ionicons name="create-outline" size={24} color="white" />
-                        <Text style={styles.btnText}>Build Manually</Text>
-                    </TouchableOpacity>
-                </View>
-            )}
-
-            {/* PHASE 3: EDITOR */}
-            {phase === 'editor' && (
-                <View style={styles.fullScreenContainer}>
-                    <View style={styles.editorHeader}>
-                        <TouchableOpacity onPress={() => setPhase('choice')}>
-                            <Ionicons name="arrow-back" size={28} color="#333" />
-                        </TouchableOpacity>
-                        <Text style={styles.editorTitle}>Editor</Text>
-                        <View style={{ width: 28 }} />
-                    </View>
-
-                    {loading ? (
-                        <View style={styles.loadingContainer}>
-                            <ActivityIndicator size="large" color="#4CAF50" />
-                            <Text style={styles.loadingText}>AI is crafting your perfect trip...</Text>
-                        </View>
-                    ) : (
-                        <ScrollView contentContainerStyle={{ padding: 20, flexGrow: 1 }}>
-                            <TextInput style={styles.largeInput} multiline value={plan} onChangeText={setPlan} />
-                            <TouchableOpacity style={styles.saveTripBtn} onPress={handleSaveTrip} disabled={isSaving}>
-                                {isSaving ? <ActivityIndicator color="#fff" /> : (
-                                    <>
-                                        <Ionicons name="save-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
-                                        <Text style={styles.saveTripText}>Save Itinerary</Text>
-                                    </>
-                                )}
-                            </TouchableOpacity>
-                        </ScrollView>
-                    )}
-                </View>
-            )}
-
-            {/* PHASE 4: VIEW SAVED TRIP */}
-            {phase === 'view' && selectedTrip && (
-                <View style={styles.fullScreenContainer}>
-                    <View style={styles.editorHeader}>
-                        <TouchableOpacity onPress={resetPlanner}>
-                            <Ionicons name="arrow-back" size={28} color="#333" />
-                        </TouchableOpacity>
-                        <Text style={styles.editorTitle}>{selectedTrip.location}</Text>
-                        <TouchableOpacity onPress={() => confirmDeleteTrip(selectedTrip.id)}>
-                            <Ionicons name="trash-outline" size={24} color="#E53935" />
+                        <TouchableOpacity style={styles.saveBtn} onPress={saveTrip} disabled={saving}>
+                            {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveBtnText}>Save Trip to Profile</Text>}
                         </TouchableOpacity>
                     </View>
-
-                    <ScrollView contentContainerStyle={{ padding: 20 }}>
-                        <View style={styles.viewMetaContainer}>
-                            <Text style={styles.viewDays}>{selectedTrip.days} Days {selectedTrip.dates ? `| ${selectedTrip.dates}` : ''}</Text>
-                            {selectedTrip.tags && selectedTrip.tags.length > 0 ? (
-                                <Text style={styles.viewTags}>{selectedTrip.tags.map((t: string) => `#${t}`).join(' ')}</Text>
-                            ) : null}
-                        </View>
-                        <Text style={styles.viewItinerary}>{selectedTrip.itinerary}</Text>
-                    </ScrollView>
-                </View>
-            )}
-
-        </View>
+                )}
+            </ScrollView>
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#fff' },
-
-    // Dashboard Styles
-    dashboardContainer: { flex: 1 },
-    topNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 60, paddingBottom: 15, borderBottomWidth: 1, borderColor: '#eee' },
-    navTitle: { fontSize: 24, fontWeight: 'bold', color: '#333' },
-    addBtn: { padding: 5 },
-    emptyState: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 40 },
-    emptyText: { fontSize: 18, fontWeight: 'bold', color: '#666', marginTop: 15 },
-    emptySubText: { fontSize: 14, color: '#999', textAlign: 'center', marginTop: 5 },
-
-    tripCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f9f9f9', padding: 15, borderRadius: 12, marginBottom: 15, borderWidth: 1, borderColor: '#eee' },
-    tripLocation: { fontSize: 18, fontWeight: 'bold', color: '#333', marginBottom: 4 },
-    tripDates: { fontSize: 13, color: '#666', marginBottom: 6 },
-    tripTags: { fontSize: 12, color: '#4CAF50', fontWeight: '500' },
-
-    // Shared / Layout
-    scrollContainer: { flexGrow: 1, padding: 20, paddingTop: 60 },
-    fullScreenContainer: { flex: 1, paddingTop: 50 },
-    headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25 },
-    mainTitle: { fontSize: 20, fontWeight: 'bold', color: '#333' },
-
-    // Form Styles
-    row: { flexDirection: 'row', justifyContent: 'space-between' },
-    sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#555', marginBottom: 8, marginTop: 15 },
-    input: { backgroundColor: '#f9f9f9', borderWidth: 1, borderColor: '#eee', borderRadius: 10, padding: 15, fontSize: 16, color: '#333' },
-    tagsContainer: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 5 },
-    tagBtn: { backgroundColor: '#f0f0f0', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20, margin: 5, borderWidth: 1, borderColor: '#ddd' },
-    tagBtnActive: { backgroundColor: '#E8F5E9', borderColor: '#4CAF50' },
-    tagText: { color: '#666', fontWeight: '600' },
-    tagTextActive: { color: '#4CAF50' },
-    primaryBtn: { flexDirection: 'row', backgroundColor: '#4CAF50', padding: 18, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginTop: 40 },
-
-    // Choice Styles
-    centerContainer: { flex: 1, justifyContent: 'center', padding: 20 },
-    choiceTitle: { fontSize: 20, fontWeight: 'bold', textAlign: 'center', marginBottom: 30, color: '#333', lineHeight: 28 },
-    modeBtn: { flexDirection: 'row', padding: 20, borderRadius: 15, marginVertical: 10, alignItems: 'center', justifyContent: 'center' },
-    btnText: { color: 'white', fontWeight: 'bold', fontSize: 18, marginLeft: 10 },
-    backBtnAbs: { flexDirection: 'row', alignItems: 'center', position: 'absolute', top: 60, left: 20 },
-    backText: { fontSize: 16, color: '#333', marginLeft: 5, fontWeight: '600' },
-
-    // Editor Styles
-    editorHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 15, borderBottomWidth: 1, borderColor: '#eee' },
-    editorTitle: { fontSize: 18, fontWeight: 'bold', color: '#333' },
-    largeInput: { flex: 1, minHeight: 400, backgroundColor: '#f9f9f9', borderWidth: 1, borderColor: '#eee', borderRadius: 10, padding: 20, fontSize: 16, textAlignVertical: 'top', color: '#333', lineHeight: 24, marginBottom: 20 },
-    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    loadingText: { marginTop: 15, fontSize: 16, color: '#666', fontWeight: '500' },
-    saveTripBtn: { flexDirection: 'row', backgroundColor: '#333', padding: 18, borderRadius: 12, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 3, elevation: 3 },
-    saveTripText: { color: '#fff', fontWeight: 'bold', fontSize: 18 },
-
-    // View Styles
-    viewMetaContainer: { backgroundColor: '#f9f9f9', padding: 15, borderRadius: 10, marginBottom: 20, borderWidth: 1, borderColor: '#eee' },
-    viewDays: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 5 },
-    viewTags: { fontSize: 14, color: '#4CAF50', fontWeight: '600' },
-    viewItinerary: { fontSize: 16, color: '#444', lineHeight: 26 }
+    container: { flex: 1, backgroundColor: '#f0f2f5' },
+    header: { padding: 20, backgroundColor: '#fff', borderBottomWidth: 1, borderColor: '#eee' },
+    headerTitle: { fontSize: 24, fontWeight: '900', color: '#333' },
+    content: { padding: 15, paddingBottom: 40 },
+    formCard: { backgroundColor: '#fff', padding: 20, borderRadius: 15, elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5 },
+    label: { fontSize: 16, fontWeight: '700', color: '#333', marginBottom: 8, marginTop: 15 },
+    input: { backgroundColor: '#f9f9f9', padding: 15, borderRadius: 10, fontSize: 16, color: '#333' },
+    row: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
+    pill: { flex: 1, paddingVertical: 12, backgroundColor: '#f0f0f0', borderRadius: 8, marginHorizontal: 4, alignItems: 'center' },
+    pillActive: { backgroundColor: '#E8F5E9', borderWidth: 1, borderColor: '#4CAF50' },
+    pillText: { color: '#666', fontWeight: '600', fontSize: 13 },
+    pillTextActive: { color: '#4CAF50', fontWeight: '800' },
+    generateBtn: { backgroundColor: '#4CAF50', padding: 16, borderRadius: 10, alignItems: 'center', marginTop: 30 },
+    generateBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+    resultContainer: { marginTop: 10 },
+    resetBtn: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
+    resetText: { color: '#4CAF50', fontWeight: 'bold', marginLeft: 5 },
+    tripTitle: { fontSize: 26, fontWeight: '900', color: '#222', marginBottom: 20 },
+    dayCard: { backgroundColor: '#fff', borderRadius: 15, padding: 15, marginBottom: 15, elevation: 2 },
+    dayHeader: { borderBottomWidth: 1, borderColor: '#eee', paddingBottom: 10, marginBottom: 10 },
+    dayTitle: { fontSize: 18, fontWeight: '900', color: '#4CAF50' },
+    dayTheme: { fontSize: 14, color: '#666', marginTop: 2 },
+    activityRow: { flexDirection: 'row', marginTop: 10, paddingRight: 20 },
+    activityIcon: { marginRight: 10, width: 24 },
+    activityText: { fontSize: 15, color: '#333', lineHeight: 22 },
+    bold: { fontWeight: 'bold' },
+    saveBtn: { backgroundColor: '#333', padding: 16, borderRadius: 10, alignItems: 'center', marginTop: 10 },
+    saveBtnText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 });
