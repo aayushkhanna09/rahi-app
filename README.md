@@ -1,56 +1,76 @@
-# 🇮🇳 RAही (Rahi) - The Traveler's Social Network
+# RAही (Rahi) - AI Travel Companion 🗺️
 
-![React Native](https://img.shields.io/badge/React_Native-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
-![Expo](https://img.shields.io/badge/Expo-1B1F23?style=for-the-badge&logo=expo&logoColor=white)
-![Firebase](https://img.shields.io/badge/Firebase-FFCA28?style=for-the-badge&logo=firebase&logoColor=black)
+RAही is a modern, React Native-based travel companion app that helps users explore, plan, and organize their trips. Powered by AI and real-time mapping, RAही acts as your personal guide to discovering incredible destinations.
 
-**RAही** is a niche, aesthetic mobile social network designed exclusively for Indian travelers. It allows users to document their journeys, track geographic milestones (like counting unique Indian States visited), and interact with a community of explorers through an Instagram-style follow and activity system.
+## ✨ Features
 
-Developed as a 6th-semester B.Tech minor project.
+- **🤖 AI Trip Planner**: Generate customized, multi-day itineraries using the power of LLaMA 3 (via Groq API) based on budget, vibe, and duration.
+- **🗺️ Interactive Maps**: Built-in detailed maps (via React Native Maps) with Turf.js for location processing and GeoJSON data handling.
+- **🔐 Secure Authentication**: Full user signup/login flows powered by Firebase Authentication.
+- **☁️ Cloud Syncing**: Save trips, profiles, and data seamlessly with Firebase Firestore.
+- **🔔 Push Notifications**: Stay updated on the go with Expo Notifications.
+- **📱 Cross-Platform**: Runs beautifully on both Android and iOS (built with Expo).
 
-## ✨ Core Features
+## 🛠️ Tech Stack
 
-* **🌍 Smart Check-in & State Tracker:** Automatically reverse-geocodes your GPS location to tag the exact Indian State or UT. The profile automatically calculates and displays the total number of unique states you've covered.
-* **📸 Hybrid Content Feed:** A dynamic, responsive home feed that intelligently adjusts its layout based on the content. Photo posts prioritize visuals, while text-only posts adapt to highlight storytelling.
-* **🤝 Instagram-Style Social Ecosystem:** * Send, accept, and decline follow requests.
-  * Keep your travel map and photos private to followers only.
-  * Real-time "Clock" activity feed for incoming requests and post likes.
-* **🗺️ Interactive Travel Map:** Every GPS-tagged memory is plotted on a personalized, interactive profile map.
-* **🔍 Discover & Search:** A dual-tab search engine to find specific places, landmarks, or fellow travelers.
+- **Framework:** [React Native](https://reactnative.dev/) & [Expo](https://expo.dev/)
+- **Language:** TypeScript
+- **Navigation:** React Navigation (Stack & Bottom Tabs)
+- **Backend/BaaS:** [Firebase](https://firebase.google.com/) (Auth, Firestore)
+- **AI Integration:** [Groq AI (LLaMA 3)](https://console.groq.com/)
+- **Mapping:** `react-native-maps` & `@turf/turf`
+- **Storage:** Expo Secure Store & React Native Async Storage
 
-## 🛠️ Tech Stack Architecture
+## 🚀 Getting Started
 
-**Frontend:**
-* **React Native & Expo:** Cross-platform mobile framework.
-* **React Navigation:** Seamless stack and tab-based routing.
-* **React Native Maps:** Interactive mapping and geographic plotting.
-* **Expo Location & Image Picker:** Device hardware integration for GPS and media.
-* **React Native Safe Area Context:** Notch-compliant, modern UI rendering.
+### Prerequisites
+Make sure you have the following installed:
+- Node.js (v18 or newer)
+- npm or yarn
+- Expo Go app on your physical device, or an iOS Simulator / Android Emulator.
 
-**Backend:**
-* **Firebase Authentication:** Secure email/password user management.
-* **Cloud Firestore (NoSQL):** Real-time database utilizing `onSnapshot` listeners for zero-latency feed updates.
-* **Atomic Operations:** Utilizes Firestore Write Batches and increments to ensure data integrity for social counters (likes, followers).
-
-## 🚀 Run Locally
-
-To get this project up and running on your local machine:
+### Installation
 
 1. **Clone the repository**
    ```bash
-   git clone [https://github.com/aayushkhanna09/rahi-app.git](https://github.com/aayushkhanna09/rahi-app.git)
+   git clone https://github.com/aayushkhanna09/rahi-app.git
    cd rahi-app
+   ```
 
-2. Install dependencies
-npm install
-or if you use yarn:
-yarn install
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
 
-3. Firebase Configuration
-Create a Firebase project and enable Authentication and Firestore.
-Add your Firebase config keys to src/config/firebase.ts.
-Ensure Firestore Rules are set up to allow authenticated reads/writes.
+3. **Set up Environment Variables**
+   Create a `.env` file in the root directory and add your secret keys. **Do not commit this file!**
+   ```env
+   # .env
+   EXPO_PUBLIC_GROQ_API_KEY=your_groq_api_key_here
+   ```
+   *(Note: Ensure your Firebase config is also properly set up in `src/config/firebase.ts`)*
 
-4. Start the Expo server
-npx expo start
-Scan the QR code with the Expo Go app on your physical device, or press a for Android emulator / i for iOS simulator.
+4. **Run the app**
+   ```bash
+   npx expo start --clear
+   ```
+
+   - Press `a` to run on an Android emulator.
+   - Press `i` to run on an iOS simulator.
+   - Scan the QR code using the **Expo Go** app on your physical phone to test locally.
+
+## 📂 Project Structure
+
+```text
+rahi-app/
+├── src/
+│   ├── config/       # Firebase and other third-party configurations
+│   ├── navigation/   # Stack and Tab Navigators
+│   ├── screens/      # Main UI screens (Home, Planner, Profile, etc.)
+│   ├── data/         # Offline data mockups (e.g. GeoJSON for borders)
+│   └── components/   # Reusable UI components
+├── App.tsx           # Application entry point
+├── .env              # Local environment variables (Ignored in Git)
+├── package.json      # Dependencies and scripts
+└── app.json          # Expo configuration
+```
