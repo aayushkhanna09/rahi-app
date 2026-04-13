@@ -3,16 +3,15 @@ import React, { useState, useEffect } from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { createStackNavigator } from '@react-navigation/stack'; // <--- Fixed missing module
+import { createStackNavigator } from '@react-navigation/stack';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
 import { collection, query, orderBy, limit, onSnapshot } from 'firebase/firestore';
+import Leaderboard from './src/screens/Leaderboard';
 
-// ✅ FIXED: Merged imports to remove duplicate 'auth' error
 import { auth, database } from './src/config/firebase';
 
-// Screens
 import Login from './src/screens/Login';
 import Home from './src/screens/Home';
 import Explore from './src/screens/Explore';
@@ -27,14 +26,13 @@ import CreatePost from './src/screens/CreatePost';
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
 
-// ✅ FIXED: Added 'shouldShowBanner' and 'shouldShowList' to satisfy TypeScript
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
     shouldPlaySound: false,
     shouldSetBadge: false,
-    shouldShowBanner: true, // Required for new Expo SDK
-    shouldShowList: true,   // Required for new Expo SDK
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
 
@@ -69,7 +67,6 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 1. Auth Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setUser(user);
@@ -78,7 +75,6 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // 2. Notification Listener
   useEffect(() => {
     if (!user) return;
 
@@ -119,7 +115,6 @@ export default function App() {
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {user ? (
           <>
-
             <Stack.Screen name="Main" component={AppNavigator} />
             <Stack.Screen name="UserProfile" component={UserProfile} />
             <Stack.Screen name="Conversation" component={Conversation} />
@@ -130,6 +125,7 @@ export default function App() {
               component={EditProfile}
               options={{ title: 'Edit Profile' }}
             />
+            <Stack.Screen name="Leaderboard" component={Leaderboard} />
           </>
         ) : (
           <Stack.Screen name="Login" component={Login} />

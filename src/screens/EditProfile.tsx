@@ -49,8 +49,7 @@ export default function EditProfile({ navigation }: any) {
 
         if (!result.canceled) {
             setPhotoURL(result.assets[0].uri);
-            // Note: To make this permanent across devices, you would upload this URI 
-            // to Firebase Storage here and get a download URL back.
+
         }
     };
 

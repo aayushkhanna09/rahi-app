@@ -1,10 +1,11 @@
 // src/screens/Profile.tsx
 import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, Image, FlatList, TouchableOpacity, Dimensions, ActivityIndicator, Modal, Alert, TextInput } from 'react-native';
-import { collection, query, where, doc, getDoc, onSnapshot, deleteDoc, updateDoc, writeBatch, arrayRemove, arrayUnion, orderBy, limit, getDocs, addDoc, serverTimestamp, increment } from 'firebase/firestore';
+import { collection, query, where, doc, getDoc, onSnapshot, deleteDoc, updateDoc, writeBatch, arrayRemove, arrayUnion, orderBy, limit, getDocs, increment } from 'firebase/firestore';
 import { auth, database } from '../config/firebase';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 interface Post {
     id: string;
@@ -64,13 +65,31 @@ export default function Profile({ navigation }: any) {
             const posts = postSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Post));
             posts.sort((a: any, b: any) => b.timestamp - a.timestamp);
             setUserPosts(posts);
+            
+            // Calculate unique states based on current posts
             const states = new Set(posts.map((p: any) => p.state).filter(Boolean));
             setUniqueStatesCount(states.size);
+            
             setLoading(false);
         });
 
         return () => { unsubscribeUser(); unsubscribePosts(); };
     }, []);
+
+    // --- AUTO-SYNC LEADERBOARD FIX ---
+    // If the locally calculated states differ from the database, fix the database silently.
+    useEffect(() => {
+        const currentUser = auth.currentUser;
+        if (!currentUser || !userData) return;
+
+        // Compare the real count against the database count
+        if (userData.statesCount !== uniqueStatesCount) {
+            const userRef = doc(database, 'users', currentUser.uid);
+            updateDoc(userRef, { 
+                statesCount: uniqueStatesCount 
+            }).catch(e => console.error("Auto-sync error:", e));
+        }
+    }, [uniqueStatesCount, userData?.statesCount]);
 
     // --- ACTIVITY LOGIC ---
     const fetchActivity = async () => {
@@ -160,7 +179,6 @@ export default function Profile({ navigation }: any) {
                 await updateDoc(postRef, { likes: arrayRemove(currentUser.uid), likeCount: increment(-1) });
             } else {
                 await updateDoc(postRef, { likes: arrayUnion(currentUser.uid), likeCount: increment(1) });
-                // We typically don't notify ourselves for liking our own post, but logic is here if needed
             }
         } catch (error) { console.error("Error toggling like:", error); }
     };
@@ -292,7 +310,7 @@ export default function Profile({ navigation }: any) {
                         </Text>
                     </View>
                 </View>
-                {item.postImage && <Image source={{ uri: item.postImage }} style={styles.activityPostPreview} />}
+                {item.postImage ? <Image source={{ uri: item.postImage }} style={styles.activityPostPreview} /> : null}
             </TouchableOpacity>
         );
     };
@@ -304,14 +322,21 @@ export default function Profile({ navigation }: any) {
     const badgeCount = userData?.followRequests?.length || 0;
 
     return (
-        <View style={styles.container}>
+        <SafeAreaView style={styles.container} edges={['top']}>
             <View style={styles.topNav}>
                 <Text style={styles.navTitle}>{userData?.email?.split('@')[0] || 'Profile'}</Text>
                 <View style={styles.navRightIcons}>
+                    
+                    {/* LEADERBOARD TROPHY BUTTON */}
+                    <TouchableOpacity onPress={() => navigation.navigate('Leaderboard')} style={styles.menuIcon}>
+                        <Ionicons name="trophy-outline" size={26} color="#D4AF37" />
+                    </TouchableOpacity>
+
                     <TouchableOpacity onPress={fetchActivity} style={styles.menuIcon}>
                         <Ionicons name="time-outline" size={28} color="#333" />
                         {badgeCount > 0 && <View style={styles.badge}><Text style={styles.badgeText}>{badgeCount}</Text></View>}
                     </TouchableOpacity>
+                    
                     <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.menuIcon}>
                         <Ionicons name="menu" size={32} color="#333" />
                     </TouchableOpacity>
@@ -408,15 +433,19 @@ export default function Profile({ navigation }: any) {
                         <TouchableOpacity style={styles.closeBtn} onPress={() => setSelectedPost(null)}>
                             <Ionicons name="close" size={28} color="#fff" />
                         </TouchableOpacity>
-                        {selectedPost?.image && <Image source={{ uri: selectedPost.image }} style={styles.modalImage} />}
+                        
+                        {selectedPost?.image ? <Image source={{ uri: selectedPost.image }} style={styles.modalImage} /> : null}
+                        
                         <View style={styles.modalInfo}>
                             <Text style={styles.modalUsername}>@{selectedPost?.displayName || userData?.email?.split('@')[0]}</Text>
-                            {(selectedPost?.location || selectedPost?.state) && (
+                            
+                            {(selectedPost?.location || selectedPost?.state) ? (
                                 <Text style={styles.modalLocation}>📍 {selectedPost.location || selectedPost.state}</Text>
-                            )}
+                            ) : null}
+                            
                             <Text style={styles.modalText}>{selectedPost?.text}</Text>
 
-                            {/* LIKE BUTTON (Added here to fix Home issue) */}
+                            {/* LIKE BUTTON */}
                             <TouchableOpacity onPress={() => selectedPost && handleLike(selectedPost)} style={{ flexDirection: 'row', alignItems: 'center', marginTop: 15 }}>
                                 <Ionicons name={isPostLiked(selectedPost) ? "heart" : "heart-outline"} size={28} color={isPostLiked(selectedPost) ? "#E53935" : "#fff"} />
                                 <Text style={{ marginLeft: 8, color: '#fff', fontWeight: 'bold' }}>{getLikesCount(selectedPost)} likes</Text>
@@ -454,13 +483,13 @@ export default function Profile({ navigation }: any) {
                     </View>
                 </View>
             </Modal>
-        </View>
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: '#fff' },
-    topNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 50, paddingBottom: 10 },
+    topNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 10 },
     navTitle: { fontSize: 20, fontWeight: 'bold', color: '#333' },
     navRightIcons: { flexDirection: 'row', alignItems: 'center' },
     menuIcon: { padding: 5, marginLeft: 15, position: 'relative' },

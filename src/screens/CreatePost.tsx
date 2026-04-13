@@ -6,6 +6,7 @@ import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, database } from '../config/firebase';
+import { doc, getDoc, updateDoc, increment } from 'firebase/firestore';
 
 const INDIAN_STATES = [
     "Andaman and Nicobar Islands", "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar", "Chandigarh", "Chhattisgarh", "Dadra and Nagar Haveli and Daman and Diu", "Delhi", "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jammu and Kashmir", "Jharkhand", "Karnataka", "Kerala", "Ladakh", "Lakshadweep", "Madhya Pradesh", "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Puducherry", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal"
@@ -50,37 +51,57 @@ export default function CreatePost({ navigation }: any) {
     };
 
     const handlePost = async () => {
-        // Validation: At least one of these must be present
-        if (!image && !caption.trim() && !selectedState) {
-            return Alert.alert('Empty Post', 'Please add at least a photo, a caption, or a state to share your memory.');
+    if (!image && !caption.trim() && !selectedState) {
+        return Alert.alert('Empty Post', 'Please add at least a photo, a caption, or a state to share your memory.');
+    }
+
+    setUploading(true);
+    const user = auth.currentUser;
+
+    try {
+        // 1. Save the Post (Keep your existing addDoc logic)
+        await addDoc(collection(database, 'posts'), {
+            uid: user?.uid,
+            displayName: user?.displayName || user?.email?.split('@')[0],
+            email: user?.email,
+            photoURL: user?.photoURL || null,
+            text: caption.trim(),
+            image: image,
+            location: locationName,
+            state: selectedState,
+            latitude: locationCoords?.lat || null,
+            longitude: locationCoords?.lng || null,
+            likes: [],
+            timestamp: serverTimestamp(),
+        });
+
+        // 2. NEW LOGIC: Update User's State Count
+        if (selectedState && user) {
+            const userRef = doc(database, 'users', user.uid);
+            const userSnap = await getDoc(userRef);
+
+            if (userSnap.exists()) {
+                const userData = userSnap.data();
+                const currentStates = userData.statesVisited || [];
+
+                // Check if this is a NEW state for the user
+                if (!currentStates.includes(selectedState)) {
+                    // It's a new state! Add it to the array AND increment the counter
+                    await updateDoc(userRef, {
+                        statesVisited: [...currentStates, selectedState],
+                        statesCount: increment(1) // Atomic increment!
+                    });
+                }
+            }
         }
 
-        setUploading(true);
-        const user = auth.currentUser;
-
-        try {
-            await addDoc(collection(database, 'posts'), {
-                uid: user?.uid,
-                displayName: user?.displayName || user?.email?.split('@')[0],
-                email: user?.email,
-                photoURL: user?.photoURL || null,
-                text: caption.trim(),
-                image: image, // Nullable
-                location: locationName,
-                state: selectedState, // Nullable, but triggers count if present
-                latitude: locationCoords?.lat || null,
-                longitude: locationCoords?.lng || null,
-                likes: [],
-                timestamp: serverTimestamp(),
-            });
-
-            navigation.goBack();
-        } catch (error) {
-            Alert.alert('Error', 'Could not upload post.');
-        } finally {
-            setUploading(false);
-        }
-    };
+        navigation.goBack();
+    } catch (error) {
+        Alert.alert('Error', 'Could not upload post.');
+    } finally {
+        setUploading(false);
+    }
+};
 
     return (
         <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
